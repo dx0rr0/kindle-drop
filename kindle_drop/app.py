@@ -168,16 +168,16 @@ class PublicRedirect(HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def fetch_public(url):
+def fetch_public(url, max_bytes=MAX_FILE, timeout=25):
     validate_public_url(url)
     opener = build_opener(ProxyHandler({}), PublicRedirect(), PublicHTTPHandler(), PublicHTTPSHandler())
     request = Request(url, headers={'User-Agent': 'Mozilla/5.0 KindleDrop/0.1', 'Accept-Encoding': 'identity'})
     try:
-        with opener.open(request, timeout=25) as response:
+        with opener.open(request, timeout=timeout) as response:
             # Check each redirect through PublicRedirect, then bound the download.
-            body = response.read(MAX_FILE + 1)
-            if len(body) > MAX_FILE:
-                raise ValueError('The download exceeds 40 MB.')
+            body = response.read(max_bytes + 1)
+            if len(body) > max_bytes:
+                raise ValueError(f'The download exceeds {max_bytes // (1024 * 1024)} MB.')
             return body, response.headers.get_content_type(), response.geturl()
     except HTTPError as e:
         raise ValueError(f'The website rejected the download (HTTP {e.code}). It may require a browser or login.') from e
@@ -302,23 +302,10 @@ class App:
             raise ValueError('Calibre ebook-convert was not found. Install Calibre or set EBOOK_CONVERT.')
         if len(data) > MAX_HTML:
             raise ValueError('The page exceeds the 8 MB HTML limit.')
-        raw = trafilatura.extract(data, url=url, output_format='json', with_metadata=True,
-                                 include_comments=False, include_tables=True)
-        if not raw:
-            raise ValueError('Could not extract the article. It may require login or JavaScript.')
-        article = json.loads(raw)
-        text = safe_text(article.get('text') or '')
-        if len(text.strip()) < 120:
-            raise ValueError('The page has too little readable text. Try the full article URL.')
-        title = safe_text(article.get('title') or urlsplit(url).hostname or 'Article')
-        author = safe_text(article.get('author') or urlsplit(url).hostname or 'Web')
-        paragraphs = '\n'.join('<p>' + escape(p) + '</p>' for p in text.splitlines() if p.strip())
-        html = ('<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta charset="utf-8"/>'
-                f'<title>{escape(title)}</title></head><body><h1>{escape(title)}</h1>'
-                f'<p>{escape(author)}</p><p>Source: <a href="{escape(url, {chr(34): "&quot;"})}">{escape(url)}</a></p>'
-                + paragraphs + '</body></html>')
+        from .articles import build_article
         with tempfile.TemporaryDirectory(dir=self.data) as folder:
             src, dst = Path(folder) / 'article.html', Path(folder) / 'article.epub'
+            html, title, author, image_count, warnings = build_article(data, url, folder, fetch_public)
             src.write_text(html, encoding='utf-8')
             env = os.environ.copy()
             env['CALIBRE_CONFIG_DIRECTORY'] = str(self.data / 'calibre-config')
@@ -327,7 +314,12 @@ class App:
                                   env=env, capture_output=True, timeout=100, creationflags=CREATE_NO_WINDOW)
             if proc.returncode or not dst.is_file():
                 raise ValueError('Calibre could not convert the article to EPUB.')
-            return self.add_epub(dst.read_bytes(), url)
+            book = self.add_epub(dst.read_bytes(), url)
+            with self.lock:
+                saved = next(b for b in self.books if b['id'] == book['id'])
+                saved.update(images=image_count, warnings=warnings)
+                self.save_books()
+                return dict(saved)
 
     def add_url(self, url):
         url = url.strip()

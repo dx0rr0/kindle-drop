@@ -95,6 +95,8 @@ Terminal Make arguments containing spaces should use `INPUT="..."`. For a litera
 
 The package contains the transport/conversion core, CLI, prerequisite checker, KUAL diagnostic, and static browser UI. Tests use isolated state, simulated USB volumes and a real local SSH/SFTP server. CI runs on Windows, Linux and macOS; the actual device path has previously been exercised on a Paperwhite 3, firmware 5.16.2.1.1, KOReader v2025.08. Other devices need their own validation.
 
-Limitations: article conversion keeps extracted text and source attribution; JavaScript pages, logins, DRM, paywalls and complex layouts are not supported. EPUBs are limited to 40 MB. This project does not block Amazon endpoints or alter firmware. Turn SSH off before joining unfamiliar networks. Re-run the diagnostic after firmware or KOReader changes.
+Article conversion preserves headings, paragraphs, emphasis, lists, quotations, code, tables and captions. Images are downloaded, normalized to reader-compatible PNGs, and embedded for offline reading; responsive light variants are preferred. Reader-friendly typography replaces the website's layout. If an image fails, its original link and a warning are included. Images are bounded to 32 per article, 8 MB each and 32 MB total.
+
+Limitations: JavaScript-only pages, logins, DRM, paywalls and interactive layouts are not supported. EPUBs are limited to 40 MB. This project does not block Amazon endpoints or alter firmware. Turn SSH off before joining unfamiliar networks. Re-run the diagnostic after firmware or KOReader changes.
 
 MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) and [the security notes](SECURITY.md).

@@ -22,7 +22,8 @@ async function refresh() {
     const title = document.createElement('h3'); title.className = 'book-title'; title.textContent = book.title;
     const meta = document.createElement('div'); meta.className = 'book-meta';
     const status = document.createElement('span'); status.className = 'status'; status.textContent = book.status;
-    meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB`)); text.append(title, meta);
+    meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB${book.images ? ` · ${book.images} images` : ''}`)); text.append(title, meta);
+    if (book.warnings && book.warnings.length) { const warning = document.createElement('p'); warning.className = 'book-meta'; warning.textContent = book.warnings.join(' '); text.append(warning); }
     const send = document.createElement('button'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle';
     send.disabled = !info.kindle.host || !info.setup_complete || !info.key_exists;
     send.onclick = async () => { send.disabled = true; message('Sending and verifying the EPUB…'); try { const result = await api(`/api/books/${book.id}/send`, '{}'); message(result.message); await refresh(); } catch (error) { message(error.message, true); send.disabled = false; } };

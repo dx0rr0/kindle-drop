@@ -126,7 +126,7 @@ def send(data, values):
 def doctor():
     from .app import find_calibre
     checks = {'Python 3.12+': sys.version_info >= (3, 12), 'Calibre ebook-convert': find_calibre('ebook-convert').is_file()}
-    for package in ('paramiko', 'trafilatura'):
+    for package in ('paramiko', 'trafilatura', 'Pillow'):
         try:
             checks[package + ' ' + importlib.metadata.version(package)] = True
         except importlib.metadata.PackageNotFoundError:
