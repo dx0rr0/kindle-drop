@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kindle-drop"
+version = "0.1.0"
+description = "Send URLs and EPUBs wirelessly to a Kindle running KOReader"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = ["paramiko==5.0.0", "trafilatura==2.3.0"]
+
+[project.scripts]
+kindle-drop = "kindle_drop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kindle_drop*"]
+
+[tool.setuptools.package-data]
+kindle_drop = ["static/*", "diagnostic/*"]

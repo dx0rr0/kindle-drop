@@ -1,0 +1,26 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Calibre (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y calibre
+      - name: Install Calibre (Windows)
+        if: runner.os == 'Windows'
+        run: choco install calibre --no-progress -y
+      - name: Install Calibre (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --cask calibre
+      - run: python -m pip install .
+      - run: python -m unittest discover -s tests -v

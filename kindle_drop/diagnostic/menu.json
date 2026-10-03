@@ -1,0 +1,1 @@
+{"items":[{"name":"Kindle Drop","priority":10,"items":[{"name":"Check prerequisites (read-only)","action":"check.sh","exitmenu":true}]}]}

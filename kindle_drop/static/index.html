@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kindle Drop</title><link rel="stylesheet" href="/style.css"><script src="/ui.js" defer></script></head>
+<body>
+<main>
+  <header><span class="badge">YOUR READING INBOX</span><h1>Kindle Drop<span>.</span></h1><p>A link or a book. Ready for your next quiet moment.</p></header>
+  <div id="connection" class="connection">Connecting to your local inbox…</div>
+  <section class="compose" aria-label="Add a reading">
+    <form id="url-form"><label for="url">Paste an article or EPUB link</label><div class="url-row"><input id="url" type="url" placeholder="https://example.org/article" required><button type="submit">Add link →</button></div><p class="hint">Public articles become EPUBs. Your books stay on this PC.</p></form>
+    <div class="divider"><span>or bring your own book</span></div>
+    <label class="drop" id="drop"><input id="files" type="file" accept=".epub,application/epub+zip" multiple><strong>Drop EPUB files here</strong><span>or click to choose · up to 40 MB each</span></label>
+  </section>
+  <div id="message" role="status" aria-live="polite"></div>
+  <section aria-label="Reading queue"><div class="section-title"><h2>Your reading queue</h2><button id="refresh" class="secondary">Refresh</button></div><div id="books"></div></section>
+  <details><summary>Setup and phone access</summary><p>Complete the prerequisite checks and SSH setup in the repository before sending. This page can prepare readings while setup is pending.</p><ol><li><code>make doctor</code></li><li><code>make check MOUNT=D:/</code> — run the diagnostic from KUAL, then reconnect USB.</li><li><code>make verify MOUNT=D:/</code></li><li><code>make key MOUNT=D:/</code></li><li><code>make pair HOST=YOUR_KINDLE_IP</code> — verify and repeat with its fingerprint.</li></ol><p>Use <code>make open LAN=1</code> for a phone on the same trusted Wi-Fi. Stop this server before changing setup. Keep the phone and OPDS links private.</p><div id="links"></div></details>
+  <footer>PC → Wi-Fi → KOReader <span>Made for reading, at your pace.</span></footer>
+</main>
+</body>
+</html>
