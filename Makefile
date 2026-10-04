@@ -20,7 +20,7 @@ export KD_SSH_PORT := $(SSH_PORT)
 export KD_WEB_PORT := $(WEB_PORT)
 export KD_LAN := $(LAN)
 
-.PHONY: help install doctor check verify key pair test send open tests
+.PHONY: help install doctor check verify key pair test send open tests install-refresh
 help:
 	@"$(PYTHON)" scripts/help.py
 install:
@@ -39,6 +39,8 @@ key:
 	@$(RUN) key
 pair:
 	@$(RUN) pair
+install-refresh:
+	@$(RUN) install-refresh
 test:
 	@$(RUN) test
 send:

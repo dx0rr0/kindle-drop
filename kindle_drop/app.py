@@ -415,6 +415,16 @@ class App:
         finally:
             client.close()
 
+    def install_refresh(self):
+        from .refresh import install
+        client, _ = self.connect()
+        try:
+            with client.open_sftp() as sftp:
+                sftp.get_channel().settimeout(30)
+                return install(sftp)
+        finally:
+            client.close()
+
     def send(self, id):
         with self.lock:
             self.get_book(id)
@@ -432,6 +442,7 @@ class App:
         client, cfg = self.connect()
         remote = cfg['inbox'] + '/' + book['filename']
         partial = remote + '.part-' + secrets.token_hex(4)
+        refresh_requested, refresh_warning = False, None
         try:
             with client.open_sftp() as sftp:
                 sftp.get_channel().settimeout(30)
@@ -452,11 +463,17 @@ class App:
                             sftp.remove(partial)
                         except OSError:
                             pass
+                from .refresh import notify
+                try:
+                    refresh_requested = notify(sftp, cfg['inbox'])
+                except Exception:
+                    refresh_warning = 'The EPUB was delivered, but automatic refresh could not be requested. Re-enter Home to reload it.'
             with self.lock:
                 b = next(b for b in self.books if b['id'] == id)
                 b.update(status='Sent', sent_at=now(), remote_path=remote)
                 self.save_books()
-            return {'remote_path': remote, 'message': f'EPUB verified on the Kindle: {remote}. In KOReader, open the file browser, go to this folder and leave/re-enter it to reload the list. If the list stays stale, restart KOReader. Search by title if needed; new books do not appear in History until opened.'}
+            guidance = 'Auto refresh requested. With the companion loaded and enabled, the visible destination folder refreshes within about five seconds.' if refresh_requested else 'In KOReader, leave and re-enter the destination folder, or restart KOReader to reload the list.'
+            return {'remote_path': remote, 'refresh_requested': refresh_requested, 'refresh_warning': refresh_warning, 'message': f'EPUB verified on the Kindle: {remote}. {refresh_warning or guidance} Search by title if needed.'}
         finally:
             client.close()
 
@@ -570,6 +587,8 @@ def handler_for(app):
                     data = json.loads(self.read_body(16384))
                     if path == '/api/url':
                         result = app.add_url(str(data.get('url', '')))
+                    elif path == '/api/kindle/install-refresh':
+                        result = app.install_refresh()
                     elif path == '/api/kindle/test':
                         result = app.test_key()
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/remove', path):

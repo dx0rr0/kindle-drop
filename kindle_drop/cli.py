@@ -218,6 +218,7 @@ def main():
     p.add_argument('--port', type=int, default=int(os.environ.get('KD_SSH_PORT', '2222')))
     p.add_argument('--fingerprint', default=os.environ.get('KD_FINGERPRINT', ''))
     p.add_argument('--destination', default=os.environ.get('KD_DESTINATION') or None)
+    sub.add_parser('install-refresh', help='Install the optional KOReader file browser auto-refresh companion')
     sub.add_parser('test')
     p = sub.add_parser('send')
     p.add_argument('inputs', nargs='*')
@@ -234,6 +235,14 @@ def main():
             doctor()
         elif args.command == 'open':
             open_web(args.data, args.port, args.lan, args.no_browser, args.alias_port)
+        elif args.command == 'install-refresh':
+            server = running_server(args.data)
+            if server:
+                result = api(*server, '/api/kindle/install-refresh', b'{}')
+            else:
+                with state_lock(args.data):
+                    result = App(args.data).install_refresh()
+            print(result['message'])
         elif args.command == 'send':
             send(args.data, inputs_from_make(args.inputs))
         else:

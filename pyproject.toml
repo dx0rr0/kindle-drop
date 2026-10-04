@@ -18,4 +18,4 @@ kindle-drop = "kindle_drop.cli:main"
 include = ["kindle_drop*"]
 
 [tool.setuptools.package-data]
-kindle_drop = ["static/*", "diagnostic/*"]
+kindle_drop = ["static/*", "diagnostic/*", "reader_plugin/*"]

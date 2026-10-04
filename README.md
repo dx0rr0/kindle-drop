@@ -77,6 +77,20 @@ make open LAN=1
 
 Open the private phone link printed in the terminal on a phone connected to the same trusted Wi-Fi. The PC must remain running. The app also exposes a private OPDS catalog URL for KOReader downloads. LAN access uses HTTP with a bearer token; treat those links like passwords and use it only on a trusted LAN. Default mode listens only on this computer.
 
+## Automatic refresh in KOReader
+
+The optional companion refreshes the visible destination folder after a verified delivery:
+
+```sh
+make install-refresh
+```
+
+Keep the Kindle awake with SSH running for installation. The installer checks the required KOReader APIs and verifies uploaded bytes. It adds `kindle_drop_refresh.koplugin` under `/mnt/us/koreader/plugins`; updates keep a hidden backup and unrecognized existing plugins are not overwritten. Restart **KOReader once**, then start its SSH server again. In the file browser's Tools menu, **Kindle Drop auto refresh** can be toggled off or on.
+
+After a successful send, the PC atomically replaces a small completion marker in KOReader's settings directory. The plugin checks it every five seconds only while the file browser is active and awake. It refreshes only the displayed destination folder, defers while a dialog/menu covers it, and preserves the folder and sort order. It never opens a book, interrupts reading, changes History, or connects to the network. A send remains successful even if requesting refresh fails; the web app reports the fallback. The marker confirms the request, not that the screen refreshed: the plugin must be loaded and enabled. Sorting by last read can still place unread books further down; search by title or choose date-added sorting.
+
+Reinstall after replacing KOReader if its plugins folder was removed. Remove the plugin folder while KOReader is closed and restart it to uninstall. Companion APIs were checked against KOReader v2025.08; other versions are checked at installation, but need their own screen validation.
+
 ## Configuration and development
 
 `MOUNT`, `HOST`, `SSH_PORT`, `FINGERPRINT`, `DESTINATION`, `WEB_PORT`, `LAN` and `INPUT` are Make variables. To isolate multiple readers, set `KINDLE_DROP_DATA` to a different private state directory. Set `EBOOK_CONVERT` or `CALIBRE` to an executable path if Calibre is not found automatically.

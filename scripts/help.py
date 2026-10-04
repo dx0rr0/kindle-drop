@@ -5,6 +5,7 @@ print("""Kindle Drop
   make verify MOUNT=D:/     Verify its fresh report after running it on the Kindle
   make key MOUNT=D:/        Reverify, create a key, install only its public portion
   make pair HOST=...        Inspect the SSH host fingerprint; repeat with FINGERPRINT=...
+  make install-refresh     Install the optional KOReader auto-refresh companion
   make test                Check key authentication and live prerequisites
   make send URL            Convert a public article and send its EPUB
   make send books/*.epub    Send matching EPUB files

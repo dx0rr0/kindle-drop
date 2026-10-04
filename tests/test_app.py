@@ -96,6 +96,20 @@ class Files(paramiko.SFTPServerInterface):
         except OSError as e:
             return paramiko.SFTPServer.convert_errno(e.errno)
 
+    def posix_rename(self, old, new):
+        try:
+            os.replace(self.path(old), self.path(new))
+            return paramiko.SFTP_OK
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
+    def rmdir(self, path):
+        try:
+            self.path(path).rmdir()
+            return paramiko.SFTP_OK
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+
     def remove(self, path):
         try:
             self.path(path).unlink()
