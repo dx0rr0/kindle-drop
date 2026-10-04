@@ -137,8 +137,12 @@ def doctor():
         raise ValueError('Install the missing PC prerequisites before Kindle setup. See docs/setup.md.')
 
 
-def pair(app, host, port, expected):
-    cfg = validate_kindle({'host': host, 'port': port})
+def pair(app, host, port, expected, destination=None):
+    options = {'host': host, 'port': port}
+    chosen_destination = destination or app.config['kindle'].get('inbox')
+    if chosen_destination:
+        options['inbox'] = chosen_destination
+    cfg = validate_kindle(options)
     if not (app.data / 'setup.json').is_file():
         raise ValueError('Complete make key with a verified USB diagnostic before pairing.')
     observed = app.probe(cfg)['fingerprint']
@@ -213,6 +217,7 @@ def main():
     p.add_argument('--host', default=os.environ.get('KD_HOST'))
     p.add_argument('--port', type=int, default=int(os.environ.get('KD_SSH_PORT', '2222')))
     p.add_argument('--fingerprint', default=os.environ.get('KD_FINGERPRINT', ''))
+    p.add_argument('--destination', default=os.environ.get('KD_DESTINATION') or None)
     sub.add_parser('test')
     p = sub.add_parser('send')
     p.add_argument('inputs', nargs='*')
@@ -243,7 +248,7 @@ def main():
                     else:
                         print(json.dumps(result, indent=2))
                 elif args.command == 'pair':
-                    pair(App(args.data), args.host, args.port, args.fingerprint)
+                    pair(App(args.data), args.host, args.port, args.fingerprint, args.destination)
                 elif args.command == 'test':
                     print(App(args.data).test_key()['message'])
         return 0

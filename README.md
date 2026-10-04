@@ -65,9 +65,9 @@ make send first.epub second.epub
 make open
 ```
 
-Find delivered books in **`/mnt/us/documents/KindleDrop`** using KOReader's file browser. Existing identical files are reused; a different file with the same name is never overwritten. `make send` uses the running web app when available, so both interfaces share one queue safely.
+Find delivered books in **`/mnt/us/documents/KindleDrop`** using KOReader's file browser. Existing identical files are reused; a different file with the same name is never overwritten. The destination is saved in your Kindle profile and retained when pairing again. To choose a different folder, use `make pair HOST=... DESTINATION="/mnt/us/documents/Books"` during fingerprint inspection and acceptance. The current destination is shown in the web app. `make send` uses the running web app when available, so both interfaces share one queue safely.
 
-`make open` opens your browser and keeps the server in the terminal. Paste a URL, choose or drop EPUBs, then click **Send to Kindle**. Press Ctrl+C to stop the server. Readings can be prepared before pairing, but sending requires completed setup.
+`make open` opens your browser and keeps the server in the terminal. Paste a URL, choose or drop EPUBs, use **Download EPUB** to review the generated book, then click **Send to Kindle** when ready. Downloads also work before pairing or when the Kindle is offline. Press Ctrl+C to stop the server. Readings can be prepared before pairing, but sending requires completed setup.
 
 For optional phone access, stop the server and run:
 
@@ -79,7 +79,7 @@ Open the private phone link printed in the terminal on a phone connected to the 
 
 ## Configuration and development
 
-`MOUNT`, `HOST`, `SSH_PORT`, `FINGERPRINT`, `WEB_PORT`, `LAN` and `INPUT` are Make variables. To isolate multiple readers, set `KINDLE_DROP_DATA` to a different private state directory. Set `EBOOK_CONVERT` or `CALIBRE` to an executable path if Calibre is not found automatically.
+`MOUNT`, `HOST`, `SSH_PORT`, `FINGERPRINT`, `DESTINATION`, `WEB_PORT`, `LAN` and `INPUT` are Make variables. To isolate multiple readers, set `KINDLE_DROP_DATA` to a different private state directory. Set `EBOOK_CONVERT` or `CALIBRE` to an executable path if Calibre is not found automatically.
 
 ```sh
 make help

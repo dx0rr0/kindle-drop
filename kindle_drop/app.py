@@ -22,7 +22,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit, urljoin, unquote
+from urllib.parse import urlsplit, urljoin, unquote, quote
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler, HTTPHandler, HTTPSHandler
 from urllib.error import HTTPError, URLError
 from xml.etree import ElementTree as ET
@@ -511,7 +511,9 @@ def handler_for(app):
                 try:
                     b = app.get_book(match[2])
                     body = (app.data / 'books' / b['filename']).read_bytes()
-                    return self.response(200, body, 'application/epub+zip', {'Content-Disposition': 'attachment; filename="book.epub"'})
+                    ascii_name = b['filename'].encode('ascii', 'ignore').decode() or 'book.epub'
+                    disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(b["filename"])}'
+                    return self.response(200, body, 'application/epub+zip', {'Content-Disposition': disposition})
                 except ValueError:
                     return self.response(404, {'error': 'Reading no encontrada.'})
             if path.startswith('/api/'):

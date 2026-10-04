@@ -12,7 +12,7 @@ class Element {
 async function render(ready) {
   const elements = new Map();
   const info = { send_ready: ready, send_blocked_reason: ready ? null : 'Pair this profile with your Kindle before sending.',
-    kindle: ready ? { host: '192.168.1.25', port: 2222 } : {}, lan: false };
+    download_path: '/download/test-catalog', kindle: ready ? { host: '192.168.1.25', port: 2222 } : {}, lan: false };
   let sendResolve;
   const sandbox = { location: { hash: '', hostname: '127.0.0.1', pathname: '/' },
     sessionStorage: { getItem: () => null, setItem: () => {} }, history: { replaceState: () => {} },
@@ -21,23 +21,29 @@ async function render(ready) {
     fetch: async (path, options = {}) => {
       if (path.endsWith('/send')) return new Promise(resolve => { sendResolve = resolve; });
       const result = path === '/api/bootstrap' ? { token: 'test-token' } : path === '/api/info' ? info :
-        [{ id: '0123456789abcdef', title: 'A test article', author: 'Test author', size: 1024, status: 'Ready' }];
+        [{ id: '0123456789abcdef', title: 'A test article', author: 'Test author', size: 1024, status: 'Ready', filename: 'A test article.epub' }];
       return { ok: true, json: async () => result };
     }
   };
   vm.runInNewContext(fs.readFileSync('kindle_drop/static/ui.js', 'utf8'), sandbox);
   await new Promise(resolve => setImmediate(resolve));
-  const button = elements.get('books').children[0].children[1];
-  return { button, elements, finish: response => sendResolve(response) };
+  const actions = elements.get('books').children[0].children[1];
+  const [download, button] = actions.children;
+  return { button, download, elements, finish: response => sendResolve(response) };
 }
 (async () => {
   const pending = await render(false);
   assert.equal(pending.button.disabled, true);
+  assert.equal(pending.download.disabled, false);
+  assert.equal(pending.download.textContent, 'Download EPUB');
+  assert.equal(pending.download.href, '/download/test-catalog/0123456789abcdef');
+  assert.equal(pending.download.download, 'A test article.epub');
   assert.match(pending.button.title, /Pair this profile/);
   assert.match(pending.elements.get('connection').textContent, /Pair this profile/);
   assert.equal(pending.button.attributes['aria-busy'], undefined);
   const active = await render(true);
   assert.equal(active.button.disabled, false);
+  assert.equal(active.download.href, '/download/test-catalog/0123456789abcdef');
   const sending = active.button.onclick();
   assert.equal(active.button.disabled, true);
   assert.equal(active.button.attributes['aria-busy'], 'true');

@@ -198,7 +198,10 @@ class Tests(unittest.TestCase):
             self.assertEqual(json.load(urlopen(req))[0]['id'], b['id'])
             feed = ET.fromstring(urlopen(base + '/opds/' + self.app.config['catalog_token']).read())
             href = feed.find('.//{*}entry/{*}link').attrib['href']
-            self.assertEqual(urlopen(base + href).read(), sample_epub())
+            with urlopen(base + href) as response:
+                self.assertEqual(response.headers.get_content_type(), 'application/epub+zip')
+                self.assertIn("filename*=UTF-8''", response.headers['Content-Disposition'])
+                self.assertEqual(response.read(), sample_epub())
             self.assertEqual(self.app.books[0]['status'], 'Ready')
             with self.assertRaises(HTTPError) as e:
                 urlopen(Request(base + '/api/bootstrap', headers={'Host': 'evil.example'}))
