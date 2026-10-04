@@ -23,6 +23,7 @@ async function refresh() {
     const meta = document.createElement('div'); meta.className = 'book-meta';
     const status = document.createElement('span'); status.className = 'status'; status.textContent = book.status;
     meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB${book.images ? ` · ${book.images} images` : ''}`)); text.append(title, meta);
+    if (book.remote_path) { const delivery = document.createElement('p'); delivery.className = 'book-meta delivery'; delivery.textContent = `On Kindle: ${book.remote_path}`; text.append(delivery); }
     if (book.warnings && book.warnings.length) { const warning = document.createElement('p'); warning.className = 'book-meta'; warning.textContent = book.warnings.join(' '); text.append(warning); }
     const actions = document.createElement('div'); actions.className = 'book-actions';
     const download = document.createElement('a'); download.className = 'secondary download';
@@ -32,13 +33,22 @@ async function refresh() {
     send.disabled = !info.send_ready;
     if (send.disabled) send.title = info.send_blocked_reason || 'Complete Kindle setup before sending.';
     send.onclick = async () => {
-      send.disabled = true; send.setAttribute('aria-busy', 'true'); send.textContent = 'Sending…';
+      send.disabled = true; remove.disabled = true; send.setAttribute('aria-busy', 'true'); send.textContent = 'Sending…';
       message('Sending and verifying the EPUB…');
       try { const result = await api(`/api/books/${book.id}/send`, '{}'); message(result.message); await refresh(); }
       catch (error) { message(error.message, true); }
-      finally { send.removeAttribute('aria-busy'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle'; send.disabled = !info.send_ready; }
+      finally { send.removeAttribute('aria-busy'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle'; send.disabled = !info.send_ready; remove.disabled = false; }
     };
-    actions.append(download, send); row.append(text, actions); el('books').append(row);
+    const remove = document.createElement('button'); remove.className = 'secondary remove'; remove.textContent = 'Remove';
+    remove.title = 'Remove this EPUB from the PC queue. Copies on the Kindle are kept.';
+    remove.setAttribute('aria-label', `Remove ${book.title} from reading queue`);
+    remove.onclick = async () => {
+      remove.disabled = true; send.disabled = true; remove.setAttribute('aria-busy', 'true');
+      try { const result = await api(`/api/books/${book.id}/remove`, '{}'); message(result.message); await refresh(); }
+      catch (error) { message(error.message, true); }
+      finally { remove.disabled = false; send.disabled = !info.send_ready; remove.removeAttribute('aria-busy'); }
+    };
+    actions.append(download, send, remove); row.append(text, actions); el('books').append(row);
   }
   el('links').replaceChildren();
   if (info.lan) for (const [label, links] of [['Phone', info.mobile], ['KOReader OPDS', info.opds]]) for (const href of links) {

@@ -249,6 +249,7 @@ class App:
         (self.data / 'books').mkdir(exist_ok=True)
         self.port, self.lan = port, lan
         self.lock = threading.RLock()
+        self.active_sends = set()
         config_file = self.data / 'config.json'
         self.config = json.loads(config_file.read_text(encoding='utf-8')) if config_file.exists() else {
             'token': secrets.token_urlsafe(24), 'catalog_token': secrets.token_urlsafe(18), 'kindle': {}}
@@ -285,8 +286,25 @@ class App:
         with self.lock:
             book = next((dict(b) for b in self.books if b['id'] == id), None)
         if book is None:
-            raise ValueError('Reading no encontrada.')
+            raise ValueError('Reading not found.')
         return book
+
+    def remove_book(self, id):
+        """Remove the local queue entry and EPUB; never delete a Kindle copy."""
+        with self.lock:
+            if id in self.active_sends:
+                raise ValueError('This reading is being sent. Wait for the transfer to finish before removing it.')
+            book = self.get_book(id)
+            previous = self.books[:]
+            self.books = [b for b in self.books if b['id'] != id]
+            try:
+                self.save_books()
+                (self.data / 'books' / book['filename']).unlink(missing_ok=True)
+            except Exception:
+                self.books = previous
+                self.save_books()
+                raise
+        return {'message': 'Removed from your reading queue. Any copy on the Kindle is kept.'}
 
     def add_epub(self, data, source='EPUB file'):
         title, author = epub_metadata(data)
@@ -398,6 +416,18 @@ class App:
             client.close()
 
     def send(self, id):
+        with self.lock:
+            self.get_book(id)
+            if id in self.active_sends:
+                raise ValueError('This reading is already being sent.')
+            self.active_sends.add(id)
+        try:
+            return self._send(id)
+        finally:
+            with self.lock:
+                self.active_sends.discard(id)
+
+    def _send(self, id):
         book = self.get_book(id)
         client, cfg = self.connect()
         remote = cfg['inbox'] + '/' + book['filename']
@@ -424,9 +454,9 @@ class App:
                             pass
             with self.lock:
                 b = next(b for b in self.books if b['id'] == id)
-                b.update(status='Sent', sent_at=now())
+                b.update(status='Sent', sent_at=now(), remote_path=remote)
                 self.save_books()
-            return {'message': f'EPUB verified on the Kindle: {remote}. Open it in the KOReader file browser.'}
+            return {'remote_path': remote, 'message': f'EPUB verified on the Kindle: {remote}. In KOReader, open the file browser, go to this folder and leave/re-enter it to reload the list. If the list stays stale, restart KOReader. Search by title if needed; new books do not appear in History until opened.'}
         finally:
             client.close()
 
@@ -515,7 +545,7 @@ def handler_for(app):
                     disposition = f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(b["filename"])}'
                     return self.response(200, body, 'application/epub+zip', {'Content-Disposition': disposition})
                 except ValueError:
-                    return self.response(404, {'error': 'Reading no encontrada.'})
+                    return self.response(404, {'error': 'Reading not found.'})
             if path.startswith('/api/'):
                 if not self.authorized():
                     return self.response(401, {'error': 'Unauthorized. Open the app from the PC.'})
@@ -542,6 +572,8 @@ def handler_for(app):
                         result = app.add_url(str(data.get('url', '')))
                     elif path == '/api/kindle/test':
                         result = app.test_key()
+                    elif re.fullmatch(r'/api/books/[a-f0-9]{16}/remove', path):
+                        result = app.remove_book(path.split('/')[3])
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/send', path):
                         result = app.send(path.split('/')[3])
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/calibre', path):

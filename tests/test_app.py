@@ -18,11 +18,14 @@ from kindle_drop.app import App, handler_for, ThreadingHTTPServer, paramiko, fin
 def sample_epub():
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w') as z:
-        z.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
-        z.writestr('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        z.writestr('content.opf', '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">urn:uuid:test</dc:identifier><dc:title>Wireless test</dc:title><dc:creator>Kindle Drop</dc:creator><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-03T12:00:00Z</meta></metadata><manifest><item id="text" href="book.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="text"/></spine></package>')
-        z.writestr('book.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Wireless test</title></head><body><h1>Your inbox is ready</h1><p>If you can read this in KOReader, the test EPUB opened successfully.</p><p>Add articles and books from your PC, then download via OPDS or send through SSH.</p></body></html>')
-        z.writestr('nav.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="book.xhtml">Wireless test</a></li></ol></nav></body></html>')
+        def write(name, content, **kwargs):
+            # Stable ZIP timestamps make byte/checksum comparisons deterministic.
+            z.writestr(zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0)), content, **kwargs)
+        write('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+        write('META-INF/container.xml', '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+        write('content.opf', '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">urn:uuid:test</dc:identifier><dc:title>Wireless test</dc:title><dc:creator>Kindle Drop</dc:creator><dc:language>en</dc:language><meta property="dcterms:modified">2026-10-03T12:00:00Z</meta></metadata><manifest><item id="text" href="book.xhtml" media-type="application/xhtml+xml"/><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/></manifest><spine><itemref idref="text"/></spine></package>')
+        write('book.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Wireless test</title></head><body><h1>Your inbox is ready</h1><p>If you can read this in KOReader, the test EPUB opened successfully.</p><p>Add articles and books from your PC, then download via OPDS or send through SSH.</p></body></html>')
+        write('nav.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="book.xhtml">Wireless test</a></li></ol></nav></body></html>')
     return buffer.getvalue()
 
 
@@ -163,6 +166,29 @@ class Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.add_epub(b'not epub')
 
+    def test_remove_persists_and_blocks_during_transfer(self):
+        book = self.app.add_epub(sample_epub())
+        path = self.app.data / 'books' / book['filename']
+        self.app.active_sends.add(book['id'])
+        with self.assertRaisesRegex(ValueError, 'being sent'):
+            self.app.remove_book(book['id'])
+        self.assertTrue(path.exists())
+        self.app.active_sends.clear()
+        self.app.remove_book(book['id'])
+        self.assertFalse(path.exists())
+        self.assertEqual(App(self.app.data).books, [])
+        with self.assertRaisesRegex(ValueError, 'not found'):
+            self.app.remove_book(book['id'])
+        self.assertNotEqual(self.app.add_epub(sample_epub())['id'], book['id'])
+
+    def test_failed_send_releases_removal_guard(self):
+        book = self.app.add_epub(sample_epub())
+        with patch.object(self.app, 'connect', side_effect=ValueError('Offline')):
+            with self.assertRaisesRegex(ValueError, 'Offline'):
+                self.app.send(book['id'])
+        self.app.remove_book(book['id'])
+        self.assertEqual(self.app.books, [])
+
     def test_article_calibre_and_plain_text(self):
         paragraphs = ''.join(f'<p>This is paragraph {i}. Wireless reading lets you prepare an article on your computer and read it later on your reader. We keep the main text and remove website navigation.</p>' for i in range(7))
         html = f'<html lang="en"><head><title>A sample article</title></head><body><nav>Menu</nav><article><h1>A sample article</h1>{paragraphs}</article></body></html>'
@@ -209,6 +235,16 @@ class Tests(unittest.TestCase):
             with self.assertRaises(HTTPError) as e:
                 urlopen(Request(base + '/api/upload', data=sample_epub(), headers={'Content-Type': 'application/epub+zip'}))
             self.assertEqual(e.exception.code, 403)
+            remove_url = base + '/api/books/' + b['id'] + '/remove'
+            with self.assertRaises(HTTPError) as e:
+                urlopen(Request(remove_url, data=b'{}'))
+            self.assertEqual(e.exception.code, 403)
+            self.assertEqual(len(self.app.books), 1)
+            response = json.load(urlopen(Request(remove_url, data=b'{}', headers={'X-Kindle-Token': self.app.config['token']})))
+            self.assertIn('Kindle is kept', response['message'])
+            with self.assertRaises(HTTPError) as e:
+                urlopen(base + href)
+            self.assertEqual(e.exception.code, 404)
         finally:
             server.shutdown()
             server.server_close()
@@ -226,12 +262,17 @@ class Tests(unittest.TestCase):
         self.app.config['kindle'] = cfg
         try:
             with patch('kindle_drop.app.validate_kindle', lambda x: x), patch.object(self.app, 'check_runtime'):
-                self.app.send(b['id'])
+                result = self.app.send(b['id'])
+                self.assertEqual(result['remote_path'], cfg['inbox'] + '/' + b['filename'])
+                self.assertEqual(self.app.books[0]['remote_path'], result['remote_path'])
                 remote = fake_root / cfg['inbox'].lstrip('/') / b['filename']
                 self.assertEqual(remote.read_bytes(), sample_epub())
                 self.app.send(b['id'])
                 self.assertEqual(len(list(remote.parent.iterdir())), 1)
                 self.assertEqual(self.app.books[0]['status'], 'Sent')
+                self.app.remove_book(b['id'])
+                self.assertEqual(remote.read_bytes(), sample_epub())
+                self.assertEqual(self.app.books, [])
                 cfg['fingerprint'] = 'SHA256:' + 'A' * 43
                 with self.assertRaises(ValueError):
                     self.app.test_key()
