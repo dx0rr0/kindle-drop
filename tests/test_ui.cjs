@@ -30,11 +30,14 @@ async function render(ready) {
   vm.runInNewContext(fs.readFileSync('kindle_drop/static/ui.js', 'utf8'), sandbox);
   await new Promise(resolve => setImmediate(resolve));
   const actions = elements.get('books').children[0].children[1];
-  const [download, button, remove] = actions.children;
+  const [download, button] = actions.children;
+  const remove = elements.get('books').children[0].children[0].children[0].children[0];
   return { button, download, remove, elements, finish: response => sendResolve(response), finishRemove: response => removeResolve(response) };
 }
 (async () => {
   const pending = await render(false);
+  assert.equal(pending.remove.textContent, '×');
+  assert.equal(pending.remove.attributes['aria-label'], 'Remove A test article from reading queue');
   assert.equal(pending.button.disabled, true);
   assert.equal(pending.download.disabled, false);
   assert.equal(pending.download.textContent, 'Download EPUB');

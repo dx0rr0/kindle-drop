@@ -20,9 +20,11 @@ async function refresh() {
     const row = document.createElement('article'); row.className = 'book';
     const text = document.createElement('div'); text.className = 'book-text';
     const title = document.createElement('h3'); title.className = 'book-title'; title.textContent = book.title;
+    const remove = document.createElement('button'); remove.className = 'book-remove'; remove.textContent = '×'; remove.type = 'button';
+    const heading = document.createElement('div'); heading.className = 'book-heading'; heading.append(remove, title);
     const meta = document.createElement('div'); meta.className = 'book-meta';
     const status = document.createElement('span'); status.className = 'status'; status.textContent = book.status;
-    meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB${book.images ? ` · ${book.images} images` : ''}`)); text.append(title, meta);
+    meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB${book.images ? ` · ${book.images} images` : ''}`)); text.append(heading, meta);
     if (book.remote_path) { const delivery = document.createElement('p'); delivery.className = 'book-meta delivery'; delivery.textContent = `On Kindle: ${book.remote_path}`; text.append(delivery); }
     if (book.warnings && book.warnings.length) { const warning = document.createElement('p'); warning.className = 'book-meta'; warning.textContent = book.warnings.join(' '); text.append(warning); }
     const actions = document.createElement('div'); actions.className = 'book-actions';
@@ -39,7 +41,6 @@ async function refresh() {
       catch (error) { message(error.message, true); }
       finally { send.removeAttribute('aria-busy'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle'; send.disabled = !info.send_ready; remove.disabled = false; }
     };
-    const remove = document.createElement('button'); remove.className = 'secondary remove'; remove.textContent = 'Remove';
     remove.title = 'Remove this EPUB from the PC queue. Copies on the Kindle are kept.';
     remove.setAttribute('aria-label', `Remove ${book.title} from reading queue`);
     remove.onclick = async () => {
@@ -48,7 +49,7 @@ async function refresh() {
       catch (error) { message(error.message, true); }
       finally { remove.disabled = false; send.disabled = !info.send_ready; remove.removeAttribute('aria-busy'); }
     };
-    actions.append(download, send, remove); row.append(text, actions); el('books').append(row);
+    actions.append(download, send); row.append(text, actions); el('books').append(row);
   }
   el('links').replaceChildren();
   if (info.lan) for (const [label, links] of [['Phone', info.mobile], ['KOReader OPDS', info.opds]]) for (const href of links) {
