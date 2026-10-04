@@ -12,7 +12,7 @@ async function api(path, body, type = 'application/json') {
 }
 async function refresh() {
   info = await api('/api/info');
-  el('connection').textContent = info.kindle.host && info.setup_complete ? `Kindle paired · ${info.kindle.host}:${info.kindle.port} · Keep KOReader SSH awake to send.` : 'Setup pending · You can add readings now. Complete the verified USB setup before sending.';
+  el('connection').textContent = info.send_ready ? `Kindle paired · ${info.kindle.host}:${info.kindle.port} · Keep KOReader SSH awake to send.` : `${info.send_blocked_reason || 'Setup pending.'} You can still add readings.`;
   const books = await api('/api/books');
   el('books').replaceChildren();
   if (!books.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'Your next read starts with a link or an EPUB.'; el('books').append(empty); }
@@ -25,8 +25,15 @@ async function refresh() {
     meta.append(status, document.createTextNode(`${book.author} · ${Math.ceil(book.size / 1024)} KB${book.images ? ` · ${book.images} images` : ''}`)); text.append(title, meta);
     if (book.warnings && book.warnings.length) { const warning = document.createElement('p'); warning.className = 'book-meta'; warning.textContent = book.warnings.join(' '); text.append(warning); }
     const send = document.createElement('button'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle';
-    send.disabled = !info.kindle.host || !info.setup_complete || !info.key_exists;
-    send.onclick = async () => { send.disabled = true; message('Sending and verifying the EPUB…'); try { const result = await api(`/api/books/${book.id}/send`, '{}'); message(result.message); await refresh(); } catch (error) { message(error.message, true); send.disabled = false; } };
+    send.disabled = !info.send_ready;
+    if (send.disabled) send.title = info.send_blocked_reason || 'Complete Kindle setup before sending.';
+    send.onclick = async () => {
+      send.disabled = true; send.setAttribute('aria-busy', 'true'); send.textContent = 'Sending…';
+      message('Sending and verifying the EPUB…');
+      try { const result = await api(`/api/books/${book.id}/send`, '{}'); message(result.message); await refresh(); }
+      catch (error) { message(error.message, true); }
+      finally { send.removeAttribute('aria-busy'); send.textContent = book.status === 'Sent' ? 'Send again' : 'Send to Kindle'; send.disabled = !info.send_ready; }
+    };
     row.append(text, send); el('books').append(row);
   }
   el('links').replaceChildren();

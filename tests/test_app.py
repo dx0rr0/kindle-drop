@@ -142,6 +142,18 @@ class Tests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_send_readiness_identifies_missing_profile_configuration(self):
+        info = self.app.info()
+        self.assertFalse(info['send_ready'])
+        self.assertIn('verified Kindle setup', info['send_blocked_reason'])
+        (self.app.data / 'setup.json').write_text('{}')
+        self.assertIn('private key', self.app.info()['send_blocked_reason'])
+        (self.app.data / 'kindle_key').write_text('TEST ONLY: placeholder')
+        self.assertIn('Pair this profile', self.app.info()['send_blocked_reason'])
+        self.app.config['kindle'] = {'host': '192.168.1.25', 'fingerprint': 'SHA256:' + 'A' * 43}
+        self.assertTrue(self.app.info()['send_ready'])
+        self.assertIsNone(self.app.info()['send_blocked_reason'])
+
     def test_epub_duplicate_and_restart(self):
         data = sample_epub()
         b = self.app.add_epub(data)

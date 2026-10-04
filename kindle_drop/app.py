@@ -260,6 +260,14 @@ class App:
 
     def info(self):
         hosts = local_ips()
+        if not (self.data / 'setup.json').is_file():
+            send_blocked_reason = 'Complete the verified Kindle setup before sending.'
+        elif not (self.data / 'kindle_key').is_file():
+            send_blocked_reason = 'The SSH private key is missing from this profile.'
+        elif not self.config['kindle'].get('host') or not self.config['kindle'].get('fingerprint'):
+            send_blocked_reason = 'Pair this profile with your Kindle before sending.'
+        else:
+            send_blocked_reason = None
         return {'lan': self.lan, 'ips': hosts, 'port': self.port,
                 'catalog_path': f'/opds/{self.config["catalog_token"]}',
                 'download_path': f'/download/{self.config["catalog_token"]}',
@@ -267,7 +275,8 @@ class App:
                 'mobile': [f'http://{h}:{self.port}/#{self.config["token"]}' for h in hosts],
                 'kindle': self.config['kindle'], 'calibre': self.converter.is_file(),
                 'key_exists': (self.data / 'kindle_key').is_file(),
-                'setup_complete': (self.data / 'setup.json').is_file()}
+                'setup_complete': (self.data / 'setup.json').is_file(),
+                'send_ready': send_blocked_reason is None, 'send_blocked_reason': send_blocked_reason}
 
     def save_books(self):
         atomic_json(self.data / 'books.json', self.books)

@@ -161,7 +161,7 @@ def pair(app, host, port, expected):
     print('Pairing saved. Public key authentication and live prerequisites passed.')
 
 
-def open_web(data, port, lan, no_browser):
+def open_web(data, port, lan, no_browser, alias_port=None):
     existing = running_server(data)
     if existing:
         if not no_browser:
@@ -171,6 +171,14 @@ def open_web(data, port, lan, no_browser):
     with state_lock(data):
         app = App(data, port, lan)
         server = ThreadingHTTPServer(('0.0.0.0' if lan else '127.0.0.1', port), handler_for(app))
+        alias = None
+        if alias_port is not None:
+            try:
+                alias = ThreadingHTTPServer(('127.0.0.1', alias_port), handler_for(app))
+            except Exception:
+                server.server_close()
+                raise
+            threading.Thread(target=alias.serve_forever, daemon=True).start()
         atomic_json(data / 'server.json', {'port': port})
         base = f'http://127.0.0.1:{port}'
         print('Kindle Drop:', base, flush=True)
@@ -186,6 +194,9 @@ def open_web(data, port, lan, no_browser):
             pass
         finally:
             server.server_close()
+            if alias is not None:
+                alias.shutdown()
+                alias.server_close()
             (data / 'server.json').unlink(missing_ok=True)
 
 
@@ -209,6 +220,7 @@ def main():
     p.add_argument('--port', type=int, default=int(os.environ.get('KD_WEB_PORT', '8765')))
     p.add_argument('--lan', action='store_true', default=os.environ.get('KD_LAN') == '1')
     p.add_argument('--no-browser', action='store_true')
+    p.add_argument('--alias-port', type=int, help='Serve the same profile on a second loopback port')
     args = parser.parse_args()
     try:
         if args.command == 'noop':
@@ -216,7 +228,7 @@ def main():
         if args.command == 'doctor':
             doctor()
         elif args.command == 'open':
-            open_web(args.data, args.port, args.lan, args.no_browser)
+            open_web(args.data, args.port, args.lan, args.no_browser, args.alias_port)
         elif args.command == 'send':
             send(args.data, inputs_from_make(args.inputs))
         else:

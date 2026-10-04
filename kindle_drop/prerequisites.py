@@ -192,12 +192,13 @@ def remote_exists(sftp, path):
         return False
 
 
-def check_remote(client, data):
+def check_remote(client, data, evidence=None):
     """Recheck firmware, executables, OTA state and actual SSH arguments before each send."""
-    setup = Path(data) / 'setup.json'
-    if not setup.is_file():
-        raise ValueError('The verified key setup is missing. Run make key after make verify.')
-    evidence = json.loads(read_small(setup))
+    if evidence is None:
+        setup = Path(data) / 'setup.json'
+        if not setup.is_file():
+            raise ValueError('The verified key setup is missing. Run make key after make verify.')
+        evidence = json.loads(read_small(setup))
     with client.open_sftp() as sftp:
         sftp.get_channel().settimeout(15)
         for relative in ('system/version.txt', 'koreader/dropbear', 'koreader/sftp-server', 'koreader/plugins/SSH.koplugin/main.lua'):

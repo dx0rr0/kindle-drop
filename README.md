@@ -84,6 +84,7 @@ Open the private phone link printed in the terminal on a phone connected to the 
 ```sh
 make help
 make tests
+node tests/test_ui.cjs       # optional browser state/progress regression tests
 make open WEB_PORT=8770
 # The CLI is also available without Make after installation:
 kindle-drop --help
