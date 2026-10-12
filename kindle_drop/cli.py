@@ -12,10 +12,11 @@ import socket
 import sys
 import threading
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 import webbrowser
 
-from .app import App, ThreadingHTTPServer, atomic_json, handler_for, local_ips, validate_kindle
+from .app import App, ThreadingHTTPServer, atomic_json, default_data_dir, handler_for, local_ips, validate_kindle
 from . import prerequisites
 
 
@@ -53,7 +54,8 @@ def api(base, token, path, body=None, content_type='application/json'):
     headers = {'X-Kindle-Token': token}
     if body is not None:
         headers['Content-Type'] = content_type
-    with urlopen(Request(base + path, data=body, headers=headers), timeout=150) as response:
+    # PDF conversion may take minutes for long books; Calibre itself is capped at 300 s.
+    with urlopen(Request(base + path, data=body, headers=headers), timeout=330) as response:
         return json.load(response)
 
 
@@ -85,7 +87,7 @@ def inputs_from_make(args):
         goals = os.environ.get('KD_GOALS', '').split()
         values = goals[1:] if goals and goals[0] == 'send' else []
     if not values:
-        raise ValueError('Provide a URL or EPUB: make send INPUT="https://example.org/article" or make send books/*.epub')
+        raise ValueError('Provide a URL, EPUB or PDF: make send INPUT="https://example.org/article" or make send books/*.epub')
     expanded = []
     for value in values:
         if value.startswith(('http://', 'https://')):
@@ -96,8 +98,8 @@ def inputs_from_make(args):
             raise ValueError(f'No files match: {value}')
         for path in matches:
             file = Path(path)
-            if file.suffix.lower() != '.epub' or not file.is_file():
-                raise ValueError(f'Expected an existing .epub file: {path}')
+            if file.suffix.lower() not in ('.epub', '.pdf') or not file.is_file():
+                raise ValueError(f'Expected an existing .epub or .pdf file: {path}')
             expanded.append(str(file))
     return expanded
 
@@ -107,13 +109,21 @@ def send(data, values):
     def transfer(app=None):
         for value in values:
             is_url = value.startswith(('http://', 'https://'))
+            if not is_url:
+                file = Path(value)
+                data = prerequisites.read_small(file, 40 * 1024 * 1024)
+                if file.suffix.lower() == '.pdf':
+                    print(f'Converting {file.name} to EPUB...')
             if server:
                 base, token = server
-                book = api(base, token, '/api/url', json.dumps({'url': value}).encode()) if is_url else api(
-                    base, token, '/api/upload', prerequisites.read_small(Path(value), 40 * 1024 * 1024), 'application/epub+zip')
+                if is_url:
+                    book = api(base, token, '/api/url', json.dumps({'url': value}).encode())
+                else:
+                    kind = 'application/pdf' if data.startswith(b'%PDF-') else 'application/epub+zip'
+                    book = api(base, token, '/api/upload?' + urlencode({'name': file.stem}), data, kind)
                 result = api(base, token, f'/api/books/{book["id"]}/send', b'{}')
             else:
-                book = app.add_url(value) if is_url else app.add_epub(prerequisites.read_small(Path(value), 40 * 1024 * 1024))
+                book = app.add_url(value) if is_url else app.add_file(data, file.stem)
                 result = app.send(book['id'])
             print(result['message'])
     if server:
@@ -206,7 +216,7 @@ def open_web(data, port, lan, no_browser, alias_port=None):
 
 def main():
     parser = argparse.ArgumentParser(description='Send URLs and EPUBs to a Kindle running KOReader.')
-    parser.add_argument('--data', type=Path, default=Path(os.environ.get('KINDLE_DROP_DATA', '.kindle-drop')))
+    parser.add_argument('--data', type=Path, default=None, help='State directory (default: KINDLE_DROP_DATA, ./.kindle-drop, or a per-user directory)')
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('doctor')
     sub.add_parser('noop', help=argparse.SUPPRESS)
@@ -220,7 +230,7 @@ def main():
     p.add_argument('--destination', default=os.environ.get('KD_DESTINATION') or None)
     sub.add_parser('install-refresh', help='Install the optional KOReader file browser auto-refresh companion')
     sub.add_parser('test')
-    p = sub.add_parser('send')
+    p = sub.add_parser('send', help='Convert and send URLs or EPUBs to the Kindle')
     p.add_argument('inputs', nargs='*')
     p = sub.add_parser('open')
     p.add_argument('--port', type=int, default=int(os.environ.get('KD_WEB_PORT', '8765')))
@@ -228,6 +238,7 @@ def main():
     p.add_argument('--no-browser', action='store_true')
     p.add_argument('--alias-port', type=int, help='Serve the same profile on a second loopback port')
     args = parser.parse_args()
+    args.data = args.data or default_data_dir()
     try:
         if args.command == 'noop':
             return 0

@@ -22,7 +22,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit, urljoin, unquote, quote
+from urllib.parse import parse_qs, urlsplit, urljoin, unquote, quote
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler, HTTPHandler, HTTPSHandler
 from urllib.error import HTTPError, URLError
 from xml.etree import ElementTree as ET
@@ -242,9 +242,22 @@ def mkdirs(sftp, path):
             sftp.mkdir(current)
 
 
+def default_data_dir():
+    """KINDLE_DROP_DATA, then ./.kindle-drop if present, then a per-user directory usable from anywhere."""
+    if os.environ.get('KINDLE_DROP_DATA'):
+        return Path(os.environ['KINDLE_DROP_DATA'])
+    local = Path('.kindle-drop')
+    if local.is_dir():
+        return local
+    if os.name == 'nt':
+        # Not under AppData: packaged (MSIX) apps silently redirect AppData writes to a private copy.
+        return Path.home() / '.kindle-drop'
+    return Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local' / 'share') / 'kindle-drop'
+
+
 class App:
     def __init__(self, data_dir=None, port=8765, lan=False):
-        self.data = Path(data_dir or Path(os.environ.get('KINDLE_DROP_DATA', '.kindle-drop')))
+        self.data = Path(data_dir or default_data_dir())
         self.data.mkdir(parents=True, exist_ok=True)
         (self.data / 'books').mkdir(exist_ok=True)
         self.port, self.lan = port, lan
@@ -324,9 +337,28 @@ class App:
             self.save_books()
             return dict(book)
 
-    def article(self, url, data):
+    def calibre_html(self, src, dst, title, author, *options, timeout=100):
+        """Package an HTML file (with its relative images) as EPUB 3 using Calibre."""
+        env = os.environ.copy()
+        env['CALIBRE_CONFIG_DIRECTORY'] = str(self.data / 'calibre-config')
+        proc = subprocess.run([str(self.converter), str(src), str(dst), '--title', title, '--authors', author,
+                               '--input-encoding', 'utf-8', '--epub-version', '3', *options],
+                              env=env, capture_output=True, timeout=timeout, creationflags=CREATE_NO_WINDOW)
+        return proc.returncode == 0 and dst.is_file()
+
+    def require_calibre(self):
         if not self.converter.is_file():
             raise ValueError('Calibre ebook-convert was not found. Install Calibre or set EBOOK_CONVERT.')
+
+    def annotate_book(self, id, **fields):
+        with self.lock:
+            saved = next(b for b in self.books if b['id'] == id)
+            saved.update(fields)
+            self.save_books()
+            return dict(saved)
+
+    def article(self, url, data):
+        self.require_calibre()
         if len(data) > MAX_HTML:
             raise ValueError('The page exceeds the 8 MB HTML limit.')
         from .articles import build_article
@@ -334,27 +366,52 @@ class App:
             src, dst = Path(folder) / 'article.html', Path(folder) / 'article.epub'
             html, title, author, image_count, warnings = build_article(data, url, folder, fetch_public)
             src.write_text(html, encoding='utf-8')
-            env = os.environ.copy()
-            env['CALIBRE_CONFIG_DIRECTORY'] = str(self.data / 'calibre-config')
-            proc = subprocess.run([str(self.converter), str(src), str(dst), '--title', title, '--authors', author,
-                                   '--input-encoding', 'utf-8', '--epub-version', '3'],
-                                  env=env, capture_output=True, timeout=100, creationflags=CREATE_NO_WINDOW)
-            if proc.returncode or not dst.is_file():
+            if not self.calibre_html(src, dst, title, author):
                 raise ValueError('Calibre could not convert the article to EPUB.')
             book = self.add_epub(dst.read_bytes(), url)
-            with self.lock:
-                saved = next(b for b in self.books if b['id'] == book['id'])
-                saved.update(images=image_count, warnings=warnings)
-                self.save_books()
-                return dict(saved)
+            return self.annotate_book(book['id'], images=image_count, warnings=warnings)
+
+    def add_pdf(self, data, source='PDF file', name=None):
+        """Reflow a text PDF into an EPUB; identical PDFs map to the same queue entry."""
+        if len(data) > MAX_FILE:
+            raise ValueError('The PDF exceeds the 40 MB limit.')
+        if not data.startswith(b'%PDF-'):
+            raise ValueError('The file is not a PDF.')
+        self.require_calibre()
+        digest = hashlib.sha256(data).hexdigest()
+        with self.lock:
+            existing = next((dict(b) for b in self.books if b.get('source_sha256') == digest), None)
+        if existing:
+            return existing
+        from .pdf import build_pdf
+        with tempfile.TemporaryDirectory(dir=self.data) as folder:
+            pdf = build_pdf(data, folder, safe_text(name or ''))
+            src, dst = Path(folder) / 'book.html', Path(folder) / 'book.epub'
+            src.write_text(pdf.html, encoding='utf-8')
+            # h1 are chapters (page break + TOC), h2/h3 nest below them in the TOC.
+            if not self.calibre_html(src, dst, pdf.title, pdf.author, '--cover', str(pdf.cover),
+                                     '--chapter', '//h:h1', '--level1-toc', '//h:h1',
+                                     '--level2-toc', '//h:h2', '--level3-toc', '//h:h3', timeout=300):
+                raise ValueError('Calibre could not package the PDF as EPUB.')
+            book = self.add_epub(dst.read_bytes(), source)
+            return self.annotate_book(book['id'], source_sha256=digest, images=pdf.images, warnings=pdf.warnings)
+
+    def add_file(self, data, name=None):
+        """Queue an uploaded EPUB or PDF, recognized by its leading bytes."""
+        if data.startswith(b'%PDF-'):
+            return self.add_pdf(data, name=name)
+        return self.add_epub(data)
 
     def add_url(self, url):
         url = url.strip()
         data, content_type, final_url = fetch_public(url)
-        if content_type == 'application/epub+zip' or data[:4] == b'PK\x03\x04':
+        if content_type == 'application/epub+zip' or data[:4] == b'PK':
             return self.add_epub(data, final_url)
+        if content_type == 'application/pdf' or data.startswith(b'%PDF-'):
+            name = unquote(PurePosixPath(urlsplit(final_url).path).stem)
+            return self.add_pdf(data, final_url, name)
         if content_type not in ('text/html', 'application/xhtml+xml'):
-            raise ValueError('The URL must point to an EPUB or an HTML article.')
+            raise ValueError('The URL must point to an EPUB, a PDF or an HTML article.')
         return self.article(final_url, data)
 
     def key(self):
@@ -582,7 +639,8 @@ def handler_for(app):
                 return self.response(403, {'error': 'Configure the Kindle from the PC.'})
             try:
                 if path == '/api/upload':
-                    result = app.add_epub(self.read_body())
+                    name = parse_qs(urlsplit(self.path).query).get('name', [None])[0]
+                    result = app.add_file(self.read_body(), name)
                 else:
                     data = json.loads(self.read_body(16384))
                     if path == '/api/url':

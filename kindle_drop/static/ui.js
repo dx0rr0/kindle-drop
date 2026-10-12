@@ -58,7 +58,15 @@ async function refresh() {
 }
 async function addFiles(files) {
   for (const file of files) {
-    try { message(`Adding ${file.name}…`); if (!file.name.toLowerCase().endsWith('.epub')) throw new Error('Choose .epub files.'); if (file.size > 40 * 1024 * 1024) throw new Error('The EPUB exceeds the 40 MB limit.'); await api('/api/upload', file, 'application/epub+zip'); message('Added to your reading queue.'); await refresh(); } catch (error) { message(error.message, true); }
+    try {
+      const name = file.name.toLowerCase(), pdf = name.endsWith('.pdf');
+      if (!pdf && !name.endsWith('.epub')) throw new Error('Choose .epub or .pdf files.');
+      if (file.size > 40 * 1024 * 1024) throw new Error(`${file.name} exceeds the 40 MB limit.`);
+      message(pdf ? `Converting ${file.name} to EPUB…` : `Adding ${file.name}…`);
+      const stem = file.name.replace(/\.[^.]+$/, '');
+      await api(`/api/upload?name=${encodeURIComponent(stem)}`, file, pdf ? 'application/pdf' : 'application/epub+zip');
+      message('Added to your reading queue.'); await refresh();
+    } catch (error) { message(error.message, true); }
   }
 }
 el('url-form').onsubmit = async event => {

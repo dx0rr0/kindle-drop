@@ -6,9 +6,9 @@
   <header><span class="badge">YOUR READING INBOX</span><h1>Kindle Drop<span>.</span></h1><p>A link or a book. Ready for your next quiet moment.</p></header>
   <div id="connection" class="connection">Connecting to your local inbox…</div>
   <section class="compose" aria-label="Add a reading">
-    <form id="url-form"><label for="url">Paste an article or EPUB link</label><div class="url-row"><input id="url" type="url" placeholder="https://example.org/article" required><button type="submit">Add link →</button></div><p class="hint">Public articles become EPUBs. Your books stay on this PC.</p></form>
+    <form id="url-form"><label for="url">Paste an article, EPUB or PDF link</label><div class="url-row"><input id="url" type="url" placeholder="https://example.org/article" required><button type="submit">Add link →</button></div><p class="hint">Articles and PDFs become reflowable EPUBs. Your books stay on this PC.</p></form>
     <div class="divider"><span>or bring your own book</span></div>
-    <label class="drop" id="drop"><input id="files" type="file" accept=".epub,application/epub+zip" multiple><strong>Drop EPUB files here</strong><span>or click to choose · up to 40 MB each</span></label>
+    <label class="drop" id="drop"><input id="files" type="file" accept=".epub,application/epub+zip,.pdf,application/pdf" multiple><strong>Drop EPUB or PDF files here</strong><span>or click to choose · up to 40 MB each</span></label>
   </section>
   <div id="message" role="status" aria-live="polite"></div>
   <details class="find-books"><summary>Where are my sent books?</summary><p>In KOReader, open the <strong>file browser</strong> and go to the destination shown above. Leave and re-enter the folder to reload its list. If the list stays stale, restart KOReader. Search by title if your sorting puts new books further down. The History view only shows books you have opened; Kindle Drop sends EPUBs for KOReader. For automatic updates after delivery, run <code>make install-refresh</code> on the PC and restart KOReader once.</p></details>

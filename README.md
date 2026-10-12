@@ -1,10 +1,11 @@
 # Kindle Drop
 
-Send a public article URL or an EPUB from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Calibre converts extracted article text into EPUB; SSH/SFTP delivers it and verifies its SHA-256 checksum.
+Send a public article URL, an EPUB or a PDF from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Articles and PDFs are reflowed into EPUBs that Calibre packages; SSH/SFTP delivers them and verifies their SHA-256 checksum.
 
 ```sh
 make send https://example.org/article
 make send books/*.epub
+make send books/paper.pdf
 make send INPUT="books/A book with spaces.epub"
 make open
 ```
@@ -76,6 +77,25 @@ make open LAN=1
 ```
 
 Open the private phone link printed in the terminal on a phone connected to the same trusted Wi-Fi. The PC must remain running. The app also exposes a private OPDS catalog URL for KOReader downloads. LAN access uses HTTP with a bearer token; treat those links like passwords and use it only on a trusted LAN. Default mode listens only on this computer.
+
+## Global command
+
+To send from any directory without Make, install the CLI as a user tool (requires [uv](https://docs.astral.sh/uv/)):
+
+```sh
+uv tool install --python 3.12 -e .
+kindle send https://example.org/article
+kindle send "A book.epub" other.epub
+kindle send book.pdf
+```
+
+`kindle test`, `kindle open` and the other commands also work. State is read from `KINDLE_DROP_DATA`, else `./.kindle-drop` when that directory exists, else a per-user directory (`%USERPROFILE%\.kindle-drop` on Windows, `~/.local/share/kindle-drop` elsewhere). To use an existing repo profile globally, move `.kindle-drop/` to that per-user directory; `make` falls back to it too.
+
+## PDFs
+
+PDFs with a text layer become reflowable EPUBs, so text adapts to the reader's font size instead of breaking at every printed line. The converter is local, CPU-only and uses no OCR or machine-learning models (PyMuPDF reads positioned text; a few seconds per book). It rebuilds paragraphs across lines, columns and pages from indents, gaps and line endings; joins hyphenated words using the book's own vocabulary; repairs broken ligature glyphs (e.g. "De˵ne" → "Define"); drops running headers, footers and page numbers; and keeps headings (as the table of contents), lists, code listings, shaded boxes, images, footnotes and sub/superscripts. The first page becomes the cover.
+
+Scanned PDFs without text are rejected. Complex tables and mathematical formulas are kept as text in reading order, not as tables or equations. Use **Download EPUB** in the web app to review a conversion before sending it.
 
 ## Automatic refresh in KOReader
 

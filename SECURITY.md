@@ -8,6 +8,6 @@ Default web access is loopback only. API requests need a bearer token; Host vali
 
 URL imports accept public HTTP/HTTPS addresses and reject private destinations and credential-bearing URLs. Redirects are validated and connections use checked numeric addresses. Download, EPUB metadata and decompression sizes are bounded. Article conversion handles untrusted web content through Calibre; keep Calibre and dependencies maintained.
 
-`.kindle-drop/` is private state: keys, tokens, device evidence and books. Its default location is inside the repo directory but it is ignored by Git. Keep it private and exclude it from shared archives. The diagnostic report is locally challenge-bound; it is not signed and cannot defend against a compromised PC or device.
+`.kindle-drop/` is private state: keys, tokens, device evidence and books. It lives in `./.kindle-drop/` (ignored by Git) when that directory exists, otherwise in a per-user directory (`%USERPROFILE%\.kindle-drop` or `~/.local/share/kindle-drop`). Keep it private and exclude it from shared archives. The diagnostic report is locally challenge-bound; it is not signed and cannot defend against a compromised PC or device.
 
 Use GitHub's private vulnerability reporting if enabled on the repository. Otherwise, do not post keys, credentials or sensitive device reports in public issues.
