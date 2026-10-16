@@ -13,15 +13,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install Calibre (Linux)
+      - name: Install Lua (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y calibre lua5.1
-      - name: Install Calibre (Windows)
-        if: runner.os == 'Windows'
-        run: choco install calibre --no-progress -y
-      - name: Install Calibre (macOS)
-        if: runner.os == 'macOS'
-        run: brew install --cask calibre
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
       - run: python -m pip install .
       - run: python -m unittest discover -s tests -v
       - run: node tests/test_ui.cjs

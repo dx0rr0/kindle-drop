@@ -147,15 +147,6 @@ def chapters(blocks, vocabulary, image_name):
     return [chapter for chapter in result if any(chapter.parts)]
 
 
-def xhtml(title, body, language='en', body_class=''):
-    attributes = f' class="{body_class}"' if body_class else ''
-    return ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
-            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" '
-            f'lang="{escape(language)}" xml:lang="{escape(language)}"><head><meta charset="utf-8"/>'
-            f'<title>{escape(title)}</title><link rel="stylesheet" type="text/css" href="style.css"/>'
-            f'</head><body{attributes}>\n{body}\n</body></html>\n')
-
-
 def document(sections, title, language='en'):
     """The whole book as one standalone HTML page, for review and tests."""
     return (f'<!DOCTYPE html>\n<html lang="{escape(language)}"><head><meta charset="utf-8"/>'

@@ -54,7 +54,7 @@ def api(base, token, path, body=None, content_type='application/json'):
     headers = {'X-Kindle-Token': token}
     if body is not None:
         headers['Content-Type'] = content_type
-    # PDF conversion may take minutes for long books; Calibre itself is capped at 300 s.
+    # PDF conversion of a long book can take a while on a slow PC.
     with urlopen(Request(base + path, data=body, headers=headers), timeout=330) as response:
         return json.load(response)
 
@@ -135,16 +135,46 @@ def send(data, values):
             transfer(app)
 
 
+def convert(values, output=None, force=False):
+    """Write EPUBs next to the PDFs (or into output) without touching the Kindle or the queue."""
+    import hashlib
+    from .pdf import build_pdf
+    files = [Path(value) for value in values]
+    for file in files:
+        if file.suffix.lower() != '.pdf':
+            raise ValueError(f'Only PDFs can be converted: {file}')
+    if output and len(files) > 1 and not output.is_dir():
+        raise ValueError('With several PDFs, --output must be an existing directory.')
+    for file in files:
+        target = output / file.with_suffix('.epub').name if output and output.is_dir() else output or file.with_suffix('.epub')
+        if target.exists() and not force:
+            raise ValueError(f'{target} already exists. Use --force to replace it.')
+        print(f'Converting {file.name} to EPUB...', flush=True)
+        data = file.read_bytes()
+        if not data.startswith(b'%PDF-'):
+            raise ValueError(f'The file is not a PDF: {file}')
+        book = build_pdf(data, file.stem)
+        epub = book.epub(f'urn:sha256:{hashlib.sha256(data).hexdigest()}')  # same identifier as a send
+        partial = target.with_name(target.name + '.partial')
+        partial.write_bytes(epub)
+        os.replace(partial, target)
+        for warning in book.warnings:
+            print('Warning:', warning)
+        print(f'Saved {target} ({len(epub) / 1e6:.1f} MB, {len(book.chapters)} chapters)')
+
+
 def doctor():
     from .app import find_calibre
-    checks = {'Python 3.12+': sys.version_info >= (3, 12), 'Calibre ebook-convert': find_calibre('ebook-convert').is_file()}
-    for package in ('paramiko', 'trafilatura', 'Pillow'):
+    checks = {'Python 3.12+': sys.version_info >= (3, 12)}
+    for package in ('paramiko', 'trafilatura', 'Pillow', 'PyMuPDF'):
         try:
             checks[package + ' ' + importlib.metadata.version(package)] = True
         except importlib.metadata.PackageNotFoundError:
             checks[package] = False
     for name, ok in checks.items():
         print(f'{"PASS" if ok else "FAIL"}  {name}')
+    # Optional: articles and PDFs are packaged without it; it only opens EPUBs in its library.
+    print(f'{"PASS" if find_calibre("calibre").is_file() else "SKIP"}  Calibre (optional)')
     if not all(checks.values()):
         raise ValueError('Install the missing PC prerequisites before Kindle setup. See docs/setup.md.')
 
@@ -235,6 +265,10 @@ def main():
     sub.add_parser('ping', help='Check whether the paired Kindle and its SSH server are reachable')
     p = sub.add_parser('send', help='Convert and send URLs or EPUBs to the Kindle')
     p.add_argument('inputs', nargs='*')
+    p = sub.add_parser('convert', help='Convert PDFs to EPUBs on this PC without sending them')
+    p.add_argument('inputs', nargs='+')
+    p.add_argument('-o', '--output', type=Path, help='EPUB file, or a directory for several PDFs (default: next to each PDF)')
+    p.add_argument('--force', action='store_true', help='Replace existing EPUBs')
     p = sub.add_parser('open')
     p.add_argument('--port', type=int, default=int(os.environ.get('KD_WEB_PORT', '8765')))
     p.add_argument('--lan', action='store_true', default=os.environ.get('KD_LAN') == '1')
@@ -269,6 +303,8 @@ def main():
             print(result['message'])
         elif args.command == 'send':
             send(args.data, inputs_from_make(args.inputs))
+        elif args.command == 'convert':
+            convert(inputs_from_make(args.inputs), args.output, args.force)
         else:
             with state_lock(args.data):
                 if args.command in ('check', 'verify', 'key'):

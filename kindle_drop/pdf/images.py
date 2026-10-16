@@ -21,38 +21,10 @@ import os
 import pymupdf
 from PIL import Image
 
-MAX_SIZE = (1264, 1680)
-JPEG_QUALITY = 80
-FLAT_LEVELS = 64  # at most this many gray levels: line art, kept lossless as PNG
+from ..eink import encode, fits
+
 MAX_PIXELS = 40_000_000
 WORKERS = min(8, os.cpu_count() or 2)
-
-
-def fits(width, height):
-    return width <= MAX_SIZE[0] and height <= MAX_SIZE[1]
-
-
-def gray(image):
-    """Composite transparency onto white paper, then convert to 8-bit gray."""
-    if image.mode in ('RGBA', 'LA', 'PA') or (image.mode == 'P' and 'transparency' in image.info):
-        image = image.convert('RGBA')
-        paper = Image.new('RGB', image.size, 'white')
-        paper.paste(image, mask=image.getchannel('A'))
-        image = paper
-    return image if image.mode == 'L' else image.convert('L')
-
-
-def encode(image):
-    """Return (bytes, extension) for a decoded image."""
-    image.draft('L', MAX_SIZE)  # JPEG: decode directly to gray at a reduced scale
-    image = gray(image)
-    image.thumbnail(MAX_SIZE, Image.Resampling.LANCZOS)
-    buffer = BytesIO()
-    if image.getcolors(FLAT_LEVELS) is not None:  # diagram or icon: lossless and crisp
-        image.save(buffer, 'PNG')
-        return buffer.getvalue(), 'png'
-    image.save(buffer, 'JPEG', quality=JPEG_QUALITY)
-    return buffer.getvalue(), 'jpg'
 
 
 def source(doc, picture):

@@ -17,7 +17,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -297,8 +296,7 @@ class App:
         atomic_json(config_file, self.config)
         ledger = self.data / 'books.json'
         self.books = json.loads(ledger.read_text(encoding='utf-8')) if ledger.exists() else []
-        self.converter = find_calibre('ebook-convert')
-        self.calibre = find_calibre('calibre')
+        self.calibre = find_calibre('calibre')  # optional: opens a queued EPUB in the Calibre library
 
     def info(self):
         hosts = local_ips()
@@ -315,7 +313,7 @@ class App:
                 'download_path': f'/download/{self.config["catalog_token"]}',
                 'opds': [f'http://{h}:{self.port}/opds/{self.config["catalog_token"]}' for h in hosts],
                 'mobile': [f'http://{h}:{self.port}/#{self.config["token"]}' for h in hosts],
-                'kindle': self.config['kindle'], 'calibre': self.converter.is_file(),
+                'kindle': self.config['kindle'], 'calibre': self.calibre.is_file(),
                 'key_exists': (self.data / 'kindle_key').is_file(),
                 'setup_complete': (self.data / 'setup.json').is_file(),
                 'send_ready': send_blocked_reason is None, 'send_blocked_reason': send_blocked_reason}
@@ -365,19 +363,6 @@ class App:
             self.save_books()
             return dict(book)
 
-    def calibre_html(self, src, dst, title, author, *options, timeout=100):
-        """Package an HTML file (with its relative images) as EPUB 3 using Calibre."""
-        env = os.environ.copy()
-        env['CALIBRE_CONFIG_DIRECTORY'] = str(self.data / 'calibre-config')
-        proc = subprocess.run([str(self.converter), str(src), str(dst), '--title', title, '--authors', author,
-                               '--input-encoding', 'utf-8', '--epub-version', '3', *options],
-                              env=env, capture_output=True, timeout=timeout, creationflags=CREATE_NO_WINDOW)
-        return proc.returncode == 0 and dst.is_file()
-
-    def require_calibre(self):
-        if not self.converter.is_file():
-            raise ValueError('Calibre ebook-convert was not found. Install Calibre or set EBOOK_CONVERT.')
-
     def annotate_book(self, id, **fields):
         with self.lock:
             saved = next(b for b in self.books if b['id'] == id)
@@ -386,18 +371,13 @@ class App:
             return dict(saved)
 
     def article(self, url, data):
-        self.require_calibre()
+        """Package a web article as EPUB directly: no Calibre, all in memory."""
         if len(data) > MAX_HTML:
             raise ValueError('The page exceeds the 8 MB HTML limit.')
         from .articles import build_article
-        with tempfile.TemporaryDirectory(dir=self.data) as folder:
-            src, dst = Path(folder) / 'article.html', Path(folder) / 'article.epub'
-            html, title, author, image_count, warnings = build_article(data, url, folder, fetch_public)
-            src.write_text(html, encoding='utf-8')
-            if not self.calibre_html(src, dst, title, author):
-                raise ValueError('Calibre could not convert the article to EPUB.')
-            book = self.add_epub(dst.read_bytes(), url)
-            return self.annotate_book(book['id'], images=image_count, warnings=warnings)
+        article = build_article(data, url, fetch_public)
+        book = self.add_epub(article.epub(), url)
+        return self.annotate_book(book['id'], images=article.images, warnings=article.warnings)
 
     def add_pdf(self, data, source='PDF file', name=None):
         """Reflow a text PDF into an EPUB; identical PDFs map to the same queue entry."""

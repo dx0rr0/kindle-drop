@@ -2,11 +2,11 @@
 
 ## 1. Install the PC tools
 
-Install [Python 3.12 or later](https://www.python.org/downloads/), [Calibre](https://calibre-ebook.com/download), GNU Make and Git. Use a native terminal: PowerShell/CMD on Windows, or your normal terminal on Linux/macOS.
+Install [Python 3.12 or later](https://www.python.org/downloads/), GNU Make and Git. [Calibre](https://calibre-ebook.com/download) is optional: articles and PDFs are converted without it, and it is only used to open a queued EPUB in its library. Use a native terminal: PowerShell/CMD on Windows, or your normal terminal on Linux/macOS.
 
-- Windows: Python must be callable from your terminal or supplied as `make install PYTHON="C:/path/to/python.exe"`. GNU Make for Windows (for example GnuWin32 Make or a suitable package from your package manager) must be on PATH. The default Calibre installation under Program Files is discovered automatically.
-- macOS: use a GNU Make package or the `make` supplied by your developer tools; the normal `/Applications/calibre.app` installation is detected.
-- Linux: install GNU Make and Calibre through your preferred distribution/package installation method; `ebook-convert` should be on PATH. Use `PYTHON=python3` when needed.
+- Windows: Python must be callable from your terminal or supplied as `make install PYTHON="C:/path/to/python.exe"`. GNU Make for Windows (for example GnuWin32 Make or a suitable package from your package manager) must be on PATH. A default Calibre installation under Program Files is discovered automatically.
+- macOS: use a GNU Make package or the `make` supplied by your developer tools; a normal `/Applications/calibre.app` installation is detected.
+- Linux: install GNU Make through your preferred distribution/package installation method (and optionally Calibre, with `calibre` on PATH). Use `PYTHON=python3` when needed.
 
 From the repository directory run `make install` and `make doctor`. Installation creates `.venv/` locally; it does not change system Python packages. Both must succeed before moving on. If dependencies are missing, `make install` resolves them. All Make recipes use Python, so Unix utilities are not required on Windows.
 
@@ -79,7 +79,7 @@ Every authenticated connection checks the firmware and SSH file hashes, live OTA
 ## Troubleshooting
 
 - **Python or Make not found:** open a fresh terminal after installation; use an explicit `PYTHON` executable for `make install`.
-- **Calibre not found:** set `EBOOK_CONVERT` to its executable path; article conversion needs it. Refer to the [ebook-convert manual](https://manual.calibre-ebook.com/generated/en/ebook-convert.html).
+- **Calibre not found:** it is optional; set `CALIBRE` to its executable path to open queued EPUBs in it.
 - **Missing prerequisites:** install/fix them on the Kindle using its current model-specific guide; this tool does not bypass a failed check.
 - **No report:** the diagnostic must run from KUAL on the reader after ejecting USB. Check the KUAL menu and `/mnt/us/kindle-drop-report.txt`.
 - **Challenge expired or files changed:** run `make check` and the KUAL diagnostic again, then verify. A previous free-form OTA report cannot substitute for this schema.

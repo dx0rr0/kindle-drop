@@ -1,17 +1,24 @@
-"""Preserve article structure and package bounded, offline images for EPUB readers."""
+"""Preserve article structure and package bounded, offline images as an EPUB for e-readers."""
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from dataclasses import dataclass, field
 import base64
 import hashlib
 from io import BytesIO
-from pathlib import Path
 import re
 from urllib.parse import urljoin, urlsplit
 
 from lxml import etree, html
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+from . import eink, language
+from .epub import Section, epub_bytes
 
 MAX_IMAGES = 32
+IMAGE_WORKERS = 6
+COVER_SIZE = (1072, 1448)  # a 300 ppi Kindle screen
+XML_INVALID = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
+LANGUAGE = re.compile(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*')
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_IMAGES = 32 * 1024 * 1024
 MAX_PIXELS = 32_000_000
@@ -52,19 +59,42 @@ hr { margin: 1.4em 0; border: 0; border-top: 1px solid #999; }
 '''
 
 
+def srcset_candidates(srcset):
+    """(url, descriptor) pairs, following the HTML parsing rules.
+
+    URLs may contain commas (image CDNs such as Substack's use them for resize options);
+    a candidate ends at whitespace, and its descriptor at the next comma.
+    """
+    candidates, position = [], 0
+    while position < len(srcset):
+        while position < len(srcset) and (srcset[position].isspace() or srcset[position] == ','):
+            position += 1
+        start = position
+        while position < len(srcset) and not srcset[position].isspace():
+            position += 1
+        url = srcset[start:position]
+        if not url:
+            break
+        if url.endswith(','):
+            candidates.append((url.rstrip(','), ''))
+            continue
+        end = srcset.find(',', position)
+        end = len(srcset) if end < 0 else end
+        candidates.append((url, srcset[position:end].strip()))
+        position = end + 1
+    return candidates
+
+
 def image_source(node, url):
     srcset = node.get('data-srcset') or node.get('srcset') or ''
     if not srcset and node.getparent() is not None and node.getparent().tag == 'picture':
         sources = node.getparent().findall('source')
         srcset = next((s.get('srcset') for s in sources if s.get('srcset')), '')
-    choices = []
-    for item in srcset.split(','):
-        parts = item.strip().split()
-        if len(parts) == 2 and re.fullmatch(r'\d+(?:\.\d+)?[wx]', parts[1]):
-            choices.append((float(parts[1][:-1]), parts[0]))
+    candidates = srcset_candidates(srcset)
+    choices = [(float(d[:-1]), u) for u, d in candidates if re.fullmatch(r'\d+(?:\.\d+)?[wx]', d)]
     if choices:
         # Choose a readable 1x/wide variant, avoiding giant 2x/4x downloads.
-        wide = any(item.strip().endswith('w') for item in srcset.split(','))
+        wide = any(d.endswith('w') for _, d in candidates)
         eligible = [p for p in choices if p[0] <= (1600 if wide else 1)]
         src = max(eligible)[1] if eligible else min(choices)[1]
     else:
@@ -141,23 +171,51 @@ def content_tree(raw, url):
     return body, tree
 
 
+@dataclass
+class Article:
+    title: str
+    author: str
+    language: str
+    section: Section
+    assets: dict[str, bytes]  # images/... referenced by the section
+    cover: bytes | None  # JPEG
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def images(self):
+        return len(self.assets)
+
+    def epub(self):
+        identifier = 'urn:sha256:' + hashlib.sha256(self.section.html.encode()).hexdigest()
+        # The cover shows in library views; reading starts at the article's own title.
+        return epub_bytes([self.section], self.title, self.author, self.language, identifier,
+                          self.assets, CSS, self.cover, cover_page=False)
+
+
+LOSSLESS = {'PNG', 'GIF', 'BMP', 'TIFF'}
+
+
 def normalize_image(raw):
+    """Return (bytes, extension, (width, height)): gray, screen sized, JPEG or PNG."""
     if len(raw) > MAX_IMAGE_BYTES:
         raise ValueError('Image exceeds 8 MB.')
     with Image.open(BytesIO(raw)) as image:
         if image.width * image.height > MAX_PIXELS:
             raise ValueError('Image dimensions are too large.')
-        image = ImageOps.exif_transpose(image)
-        image.thumbnail((1600, 2400), Image.Resampling.LANCZOS)
-        if image.mode not in ('RGB', 'RGBA', 'L', 'LA'):
-            image = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
-        buffer = BytesIO()
-        # PNG keeps screenshot text crisp and works reliably in EPUB readers.
-        image.save(buffer, format='PNG', optimize=True)
-        return buffer.getvalue()
+        lossless = image.format in LOSSLESS
+        image.draft('L', (max(eink.MAX_SIZE),) * 2)  # EXIF rotation below may swap the sides
+        image = eink.prepare(ImageOps.exif_transpose(image))
+    data, extension = eink.save(image)
+    if lossless and extension == 'jpg':
+        # Screenshots keep crisp text as PNG unless that costs much more than a JPEG.
+        crisp = eink.png(image)
+        if len(crisp) <= 1.5 * len(data):
+            data, extension = crisp, 'png'
+    return data, extension, image.size
 
 
 def download_image(source, fetch):
+    """Return (original byte count, normalize_image result)."""
     if source.startswith('data:'):
         if not re.match(r'data:image/(png|jpeg|gif|webp);base64,', source, re.I):
             raise ValueError('Unsupported embedded image.')
@@ -167,49 +225,170 @@ def download_image(source, fetch):
         raw = base64.b64decode(encoded, validate=True)
     else:
         raw, _, _ = fetch(source, max_bytes=MAX_IMAGE_BYTES, timeout=12)
-    return raw, normalize_image(raw)
+    return len(raw), normalize_image(raw)
 
 
-def build_article(raw, url, folder, fetch):
+def cover_candidate(size):
+    """Large enough to carry a cover, and not a thin banner or divider."""
+    width, height = size
+    return width >= 300 and height >= 150 and width <= 4 * height and height <= 3 * width
+
+
+def social_image(tree, url):
+    """The page's own preview image (Open Graph / Twitter card), if declared."""
+    for path in ('//meta[@property="og:image"]/@content', '//meta[@name="og:image"]/@content',
+                 '//meta[@name="twitter:image"]/@content', '//meta[@property="twitter:image"]/@content'):
+        found = [value.strip() for value in tree.xpath(path) if value.strip()]
+        if found:
+            target = urljoin(url, found[0])
+            return target if urlsplit(target).scheme in ('http', 'https') else None
+    return None
+
+
+FONTS = {True: ('georgiab.ttf', 'DejaVuSerif-Bold.ttf', 'LiberationSerif-Bold.ttf', 'NotoSerif-Bold.ttf', 'Georgia Bold.ttf'),
+         False: ('segoeui.ttf', 'DejaVuSans.ttf', 'LiberationSans-Regular.ttf', 'NotoSans-Regular.ttf', 'Arial.ttf')}
+FONT_PATHS = {}
+
+
+def font(size, bold=True):
+    """A system serif (titles) or sans (labels), falling back to Pillow's bundled font."""
+    if bold not in FONT_PATHS:
+        FONT_PATHS[bold] = None
+        for name in FONTS[bold]:
+            try:
+                FONT_PATHS[bold] = ImageFont.truetype(name, 10).path
+                break
+            except OSError:
+                continue
+    path = FONT_PATHS[bold]
+    return ImageFont.truetype(path, size) if path else ImageFont.load_default(size)
+
+
+def wrap(draw, text, face, width):
+    lines, line = [], ''
+    for word in text.split():
+        trial = f'{line} {word}'.strip()
+        if line and draw.textlength(trial, font=face) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    return lines + [line] if line else lines
+
+
+def cover_image(title, site, picture=None):
+    """A portrait cover as JPEG: the article's first image above its title, and the site."""
+    width, height = COVER_SIZE
+    margin = 72
+    page = Image.new('L', COVER_SIZE, 255)
+    draw = ImageDraw.Draw(page)
+    top = 220  # a text-only cover starts its title lower
+    if picture is not None:
+        picture = eink.gray(picture)
+        scale = min(width / picture.width, 0.56 * height / picture.height)
+        picture = picture.resize((max(1, round(picture.width * scale)), max(1, round(picture.height * scale))),
+                                 Image.Resampling.LANCZOS)
+        page.paste(picture, ((width - picture.width) // 2, 0))
+        top = picture.height + 64
+    label = font(34, bold=False)
+    footer = height - margin - 40
+    draw.line((margin, footer - 28, width - margin, footer - 28), fill=0, width=3)
+    draw.text((margin, footer), site, font=label, fill=70)
+    room = footer - 72 - top
+    for size in (88, 80, 72, 64, 56, 50, 44, 40):
+        face, leading = font(size), round(size * 1.2)
+        lines = wrap(draw, title, face, width - 2 * margin)
+        if len(lines) * leading <= room:
+            break
+    if len(lines) * leading > room:
+        lines = lines[:max(1, room // leading)]
+        lines[-1] += '…'
+    for number, line in enumerate(lines):
+        draw.text((margin, top + number * leading), line, font=face, fill=0)
+    buffer = BytesIO()
+    page.save(buffer, 'JPEG', quality=85)
+    return buffer.getvalue()
+
+
+def section(output, body, title):
+    """Serialize the article as XHTML with unique ids and a heading outline for the TOC."""
+    seen = set()
+    for node in output.iter():
+        identifier = node.get('id')
+        if identifier in seen:
+            del node.attrib['id']
+        elif identifier:
+            seen.add(identifier)
+    headings = [(1, title, 'kd-title')]
+    for number, node in enumerate(body.iter('h2', 'h3')):
+        text = ' '.join(node.text_content().split())
+        if not text:
+            continue
+        if not node.get('id'):
+            node.set('id', f'kd-h{number}')
+        headings.append((int(node.tag[1]), text, node.get('id')))
+    markup = etree.tostring(output, method='xml', encoding='unicode')
+    # As Calibre did: e-reader fonts often lack U+2011, and soft hyphens are left to the reader.
+    markup = markup.replace('\u2011', '-').replace('\xad', '')
+    return Section(XML_INVALID.sub('', markup), headings)
+
+
+def clean_title(title, site, site_name=None):
+    """Drop heading permalink marks and a trailing " | Site" or " - Site" the cover already shows."""
+    title = title.strip().rstrip('¶§#🔗').strip()
+    squash = lambda text: re.sub(r'[^0-9a-z]', '', text.lower())
+    names = {squash(site), squash(site.rpartition('.')[0]), squash(site_name or '')} - {''}
+    for separator in (' | ', ' - ', ' – ', ' — ', ' · '):
+        head, found, tail = title.rpartition(separator)
+        tail = squash(tail)
+        if found and head.strip() and any(tail == name or (len(tail) >= 4 and tail in name) for name in names):
+            return head.strip()
+    return title
+
+
+def build_article(raw, url, fetch):
     import trafilatura
     body, source_tree = content_tree(raw, url)
     metadata = trafilatura.extract_metadata(source_tree, default_url=url)
+    site = (urlsplit(url).hostname or '').removeprefix('www.')
     title = (metadata.title if metadata else None) or source_tree.findtext('.//h1') or urlsplit(url).hostname or 'Article'
     author = (metadata.author if metadata else None) or urlsplit(url).hostname or 'Web'
-    title, author = str(title).strip(), str(author).strip()
+    site_name = metadata.sitename if metadata else None
+    stated, title = str(title).strip(), clean_title(str(title), site, site_name) or str(title).strip()
+    author = str(author).strip()
     for heading in list(body.iter('h1')):
-        if heading.text_content().strip() == title:
+        text = heading.text_content().strip()
+        if text in (stated, title) or clean_title(text, site, site_name) == title:
             heading.drop_tree()
         else:
             heading.tag = 'h2'
     nodes = list(body.iter('img'))
     sources = list(dict.fromkeys(n.get('src', '') for n in nodes))
-    warnings, assets, total = [], {}, 0
+    warnings, assets, names, total, picture = [], {}, {}, 0, None
     selected = sources[:MAX_IMAGES]
-    # Small bounded batches cap in-flight downloads and memory, even with oversized originals.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for start in range(0, len(selected), 4):
-            batch = selected[start:start + 4]
-            futures = [pool.submit(download_image, src, fetch) for src in batch]
-            for src, future in zip(batch, futures):
-                try:
-                    original, normalized = future.result()
-                    total += max(len(original), len(normalized))
-                    if total > MAX_TOTAL_IMAGES:
-                        raise ValueError('The total article image limit is 32 MB.')
-                    name = 'images/' + hashlib.sha256(normalized).hexdigest()[:20] + '.png'
-                    target = Path(folder) / name
-                    target.parent.mkdir(exist_ok=True)
-                    target.write_bytes(normalized)
-                    assets[src] = name
-                except Exception:
-                    warnings.append('An article image could not be embedded. Its original link is included.')
+    # All downloads start at once on a few workers (each holds at most one original);
+    # results are taken in document order, so the first suitable image is the cover.
+    with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
+        futures = [pool.submit(download_image, src, fetch) for src in selected]
+        for src, future in zip(selected, futures):
             if total > MAX_TOTAL_IMAGES:
-                break
+                future.cancel()
+                continue
+            try:
+                original, (data, extension, size) = future.result()
+                total += max(original, len(data))
+                if total > MAX_TOTAL_IMAGES:
+                    raise ValueError('The total article image limit is 32 MB.')
+                name = f'images/{hashlib.sha256(data).hexdigest()[:20]}.{extension}'
+                assets[name], names[src] = data, name
+                if picture is None and cover_candidate(size):
+                    picture = data
+            except Exception:
+                warnings.append('An article image could not be embedded. Its original link is included.')
     for node in nodes:
         src = node.get('src', '')
-        if src in assets:
-            node.set('src', assets[src])
+        if src in names:
+            node.set('src', names[src])
         else:
             alt = node.get('alt', 'Article image')
             node.tag = 'a'
@@ -226,17 +405,24 @@ def build_article(raw, url, folder, fetch):
             parent.replace(node, wrapper)
             wrapper.append(node)
             wrapper.tail, node.tail = node.tail, None
-    document = html.Element('html', lang=source_tree.get('lang', 'en'))
-    head = etree.SubElement(document, 'head')
-    etree.SubElement(head, 'meta', charset='utf-8')
-    etree.SubElement(head, 'title').text = title
-    etree.SubElement(head, 'style').text = CSS
-    output = etree.SubElement(document, 'body')
-    etree.SubElement(output, 'h1').text = title
+    if picture is None and (preview := social_image(source_tree, url)):
+        try:  # an article without a usable image of its own: its preview card, cover only
+            _, (data, _, size) = download_image(preview, fetch)
+            picture = data if cover_candidate(size) else None
+        except Exception:
+            pass
+    try:
+        cover = cover_image(title, site, Image.open(BytesIO(picture)) if picture else None)
+    except Exception:
+        cover = None  # a missing cover never blocks the article
+    lang = source_tree.get('lang', '').strip()
+    if not LANGUAGE.fullmatch(lang):
+        lang = language.guess(body.text_content())
+    output = html.Element('div')
+    etree.SubElement(output, 'h1', id='kd-title').text = title
     etree.SubElement(output, 'p', attrib={'class': 'byline'}).text = author
     output.append(body)
     attribution = etree.SubElement(output, 'p', attrib={'class': 'source'})
     attribution.text = 'Source: '
     etree.SubElement(attribution, 'a', href=url).text = url
-    text = '<!DOCTYPE html>\n' + html.tostring(document, encoding='unicode', method='html')
-    return text, title, author, len(set(assets.values())), list(dict.fromkeys(warnings))
+    return Article(title, author, lang, section(output, body, title), assets, cover, list(dict.fromkeys(warnings)))

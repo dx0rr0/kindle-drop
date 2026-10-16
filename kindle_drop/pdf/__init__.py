@@ -10,8 +10,8 @@ import threading
 
 from .extract import open_pdf, read_document, render_cover
 from .layout import reflow
-from .epub import epub_bytes
-from .render import chapters, document
+from ..epub import epub_bytes
+from .render import CSS, chapters, document
 from .text import Vocabulary, guess_language, ligature_map, replacements
 
 MIN_TEXT = 200  # characters; less than this means a scanned PDF
@@ -38,7 +38,7 @@ class PdfBook:
         return document(self.chapters, self.title, self.language)
 
     def epub(self, identifier):
-        return epub_bytes(self.chapters, self.title, self.author, self.language, identifier, self.assets, self.cover)
+        return epub_bytes(self.chapters, self.title, self.author, self.language, identifier, self.assets, CSS, self.cover)
 
 
 def repair_glyphs(pages):

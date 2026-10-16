@@ -1,6 +1,6 @@
 # Kindle Drop
 
-Send a public article URL, an EPUB or a PDF from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Articles are packaged as EPUB by Calibre and PDFs are reflowed into EPUB directly; SSH/SFTP delivers them and the Kindle verifies their SHA-256 checksum; the connection and live device checks run while the reading is still being prepared.
+Send a public article URL, an EPUB or a PDF from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Articles and PDFs are packaged as EPUB directly, with no Calibre round trip; SSH/SFTP delivers them and the Kindle verifies their SHA-256 checksum; the connection and live device checks run while the reading is still being prepared.
 
 ```sh
 make send https://example.org/article
@@ -17,7 +17,7 @@ This is an MVP for **already jailbroken Kindles**. It does not install a jailbre
 | Computer | Kindle |
 | --- | --- |
 | Python 3.12+, GNU Make, Git to clone the repo | A working jailbreak and its current hotfix |
-| Calibre, including `ebook-convert` | KOReader installed at `/mnt/us/koreader` |
+| Calibre is optional (only to open queued EPUBs in its library) | KOReader installed at `/mnt/us/koreader` |
 | Dependencies installed by `make install` | KUAL able to execute extensions as root |
 | Same trusted LAN as the Kindle for sending | Firmware 5.11+ with OTA binaries disabled using the recognized `.bck` rename method |
 | A browser for `make open` | KOReader's SSH plugin, Dropbear and SFTP server; password bypass disabled |
@@ -87,15 +87,20 @@ uv tool install --python 3.12 -e .
 kindle send https://example.org/article
 kindle send "A book.epub" other.epub
 kindle send book.pdf
+kindle convert book.pdf
 ```
 
-`kindle ping` checks, without touching the device, whether the Kindle is awake and its SSH server is running. `kindle test`, `kindle open` and the other commands also work. State is read from `KINDLE_DROP_DATA`, else `./.kindle-drop` when that directory exists, else a per-user directory (`%USERPROFILE%\.kindle-drop` on Windows, `~/.local/share/kindle-drop` elsewhere). To use an existing repo profile globally, move `.kindle-drop/` to that per-user directory; `make` falls back to it too.
+`kindle convert` only writes the EPUB next to each PDF (or to `-o file.epub` / `-o folder`), without connecting to the Kindle or adding it to the queue; existing EPUBs are kept unless `--force` is given. `kindle ping` checks, without touching the device, whether the Kindle is awake and its SSH server is running. `kindle test`, `kindle open` and the other commands also work. State is read from `KINDLE_DROP_DATA`, else `./.kindle-drop` when that directory exists, else a per-user directory (`%USERPROFILE%\.kindle-drop` on Windows, `~/.local/share/kindle-drop` elsewhere). To use an existing repo profile globally, move `.kindle-drop/` to that per-user directory; `make` falls back to it too.
+
+## Articles
+
+Article pages keep their structure (headings, lists, code, quotes, tables, captions) without site navigation or scripts, and their images are embedded for offline reading. The first suitable image of the article (or, without one, the page's preview card) becomes a portrait cover above the title and site name; articles without either get a typographic cover. Images use the same e-ink preparation as PDFs; screenshots stay lossless PNG unless that costs much more. Headings form the table of contents, the declared page language drives hyphenation, and site suffixes such as " | Wikipedia" are dropped from titles.
 
 ## PDFs
 
 PDFs with a text layer become reflowable EPUBs, so text adapts to the reader's font size instead of breaking at every printed line. The converter is local, CPU-only and uses no OCR or machine-learning models (PyMuPDF reads positioned text; a few seconds per book). It rebuilds paragraphs across lines, columns and pages from indents, gaps and line endings; joins hyphenated words using the book's own vocabulary; repairs broken ligature glyphs (e.g. "De˵ne" → "Define"); drops running headers, footers and page numbers; and keeps headings (as the table of contents), lists, code listings, shaded boxes, images, footnotes and sub/superscripts. The first page becomes the cover. Images are prepared for e-ink: grayscale (Kindle screens have no color), at most 1264×1680 px, photos and screenshots as JPEG and flat diagrams as lossless PNG. The EPUB is written directly without Calibre, so an 800-page illustrated book converts in seconds, and the same PDF always produces the same EPUB.
 
-Scanned PDFs without text are rejected. Complex tables and mathematical formulas are kept as text in reading order, not as tables or equations. Use **Download EPUB** in the web app to review a conversion before sending it.
+Scanned PDFs without text are rejected. Complex tables and mathematical formulas are kept as text in reading order, not as tables or equations. Use **Download EPUB** in the web app, or `kindle convert`, to review a conversion before sending it.
 
 ## Automatic refresh in KOReader
 
@@ -113,7 +118,7 @@ Reinstall after replacing KOReader if its plugins folder was removed. Remove the
 
 ## Configuration and development
 
-`MOUNT`, `HOST`, `SSH_PORT`, `FINGERPRINT`, `DESTINATION`, `WEB_PORT`, `LAN` and `INPUT` are Make variables. To isolate multiple readers, set `KINDLE_DROP_DATA` to a different private state directory. Set `EBOOK_CONVERT` or `CALIBRE` to an executable path if Calibre is not found automatically.
+`MOUNT`, `HOST`, `SSH_PORT`, `FINGERPRINT`, `DESTINATION`, `WEB_PORT`, `LAN` and `INPUT` are Make variables. To isolate multiple readers, set `KINDLE_DROP_DATA` to a different private state directory. Set `CALIBRE` to an executable path if the optional Calibre is not found automatically.
 
 ```sh
 make help

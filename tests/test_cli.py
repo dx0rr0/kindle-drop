@@ -49,6 +49,35 @@ class CliTests(unittest.TestCase):
                     else:
                         self.assertIn(args[1], record['KD_GOALS'])
 
+    def test_convert_writes_epub_without_state_or_kindle(self):
+        from tests.test_pdf import sample_pdf
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pdf = root / 'A book.pdf'
+            pdf.write_bytes(sample_pdf())
+            data = root / 'state'
+            run = lambda *args: subprocess.run([sys.executable, '-m', 'kindle_drop', '--data', str(data), 'convert', *args],
+                                               capture_output=True, text=True)
+            result = run(str(pdf))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            epub = root / 'A book.epub'
+            first = epub.read_bytes()
+            self.assertTrue(first.startswith(b'PK') and b'application/epub+zip' in first[:100])
+            self.assertFalse(data.exists())  # no profile, queue or key involved
+            result = run(str(pdf))
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('already exists', result.stderr)
+            self.assertEqual(run(str(pdf), '--force').returncode, 0)
+            self.assertEqual(epub.read_bytes(), first)  # deterministic
+            out = root / 'out'
+            out.mkdir()
+            self.assertEqual(run(str(root / '*.pdf'), '-o', str(out)).returncode, 0)
+            self.assertEqual((out / 'A book.epub').read_bytes(), first)
+            self.assertEqual(run(str(pdf), '-o', str(root / 'renamed.epub')).returncode, 0)
+            self.assertTrue((root / 'renamed.epub').is_file())
+            self.assertIn('Only PDFs', run(str(epub)).stderr)
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ['A book.epub', 'A book.pdf', 'out', 'renamed.epub'])
+
     def test_process_lock_excludes_another_cli(self):
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary) / 'state'
