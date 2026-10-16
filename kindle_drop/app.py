@@ -31,15 +31,25 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent
 
-import paramiko
-import trafilatura
-
 MAX_FILE = 40 * 1024 * 1024
 MAX_HTML = 8 * 1024 * 1024
 MAX_UNZIP = 200 * 1024 * 1024
 ATOM = 'http://www.w3.org/2005/Atom'
 DC = 'http://purl.org/dc/elements/1.1/'
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+WARM_SECONDS = 90  # a pre-opened Kindle connection older than this is discarded
+
+
+def ssh():
+    """paramiko takes about a second to import; load it only when talking to the Kindle."""
+    import paramiko
+    return paramiko
+
+
+def __getattr__(name):
+    if name == 'paramiko':  # `from kindle_drop.app import paramiko` keeps working
+        return ssh()
+    raise AttributeError(name)
 
 
 def find_calibre(name):
@@ -222,13 +232,30 @@ def fingerprint(key):
     return 'SHA256:' + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip('=')
 
 
-class PinnedKey(paramiko.MissingHostKeyPolicy):
-    def __init__(self, expected):
-        self.expected = expected
+def pinned_key(expected):
+    """Host key policy accepting only the fingerprint verified during pairing."""
+    class PinnedKey(ssh().MissingHostKeyPolicy):
+        def missing_host_key(self, client, hostname, key):
+            if not expected or not secrets.compare_digest(fingerprint(key), expected):
+                raise ValueError('The SSH host fingerprint changed. Verify the device before reconnecting.')
+    return PinnedKey()
 
-    def missing_host_key(self, client, hostname, key):
-        if not self.expected or not secrets.compare_digest(fingerprint(key), self.expected):
-            raise ValueError('The SSH host fingerprint changed. Verify the device before reconnecting.')
+
+def remote_sha256(client, sftp, path):
+    """Hash on the Kindle (busybox sha256sum) so a book is not downloaded again to verify it.
+
+    Falls back to reading the file back over SFTP when the command is unavailable.
+    """
+    try:
+        _, stdout, _ = client.exec_command("sha256sum '" + path.replace("'", "'\\''") + "'", timeout=60)
+        answer = stdout.read(200).decode('ascii', 'replace').split()
+        if stdout.channel.recv_exit_status() == 0 and answer and re.fullmatch(r'[0-9a-f]{64}', answer[0]):
+            return answer[0]
+    except Exception:
+        pass
+    with sftp.open(path, 'rb') as file:
+        file.prefetch()
+        return hashlib.sha256(file.read(MAX_FILE + 1)).hexdigest()
 
 
 def mkdirs(sftp, path):
@@ -263,6 +290,7 @@ class App:
         self.port, self.lan = port, lan
         self.lock = threading.RLock()
         self.active_sends = set()
+        self.warm = None  # (started monotonic time, Future of a connected and checked client)
         config_file = self.data / 'config.json'
         self.config = json.loads(config_file.read_text(encoding='utf-8')) if config_file.exists() else {
             'token': secrets.token_urlsafe(24), 'catalog_token': secrets.token_urlsafe(18), 'kindle': {}}
@@ -409,13 +437,13 @@ class App:
         path = self.data / 'kindle_key'
         if not path.is_file():
             raise ValueError('No SSH key exists. Complete make check, make verify and make key first.')
-        key = paramiko.ECDSAKey.from_private_key_file(str(path))
+        key = ssh().ECDSAKey.from_private_key_file(str(path))
         return key, f'{key.get_name()} {key.get_base64()} kindle-drop\n'
 
     def probe(self, cfg):
         cfg = validate_kindle(cfg)
         with socket.create_connection((cfg['host'], cfg['port']), timeout=8) as sock:
-            transport = paramiko.Transport(sock)
+            transport = ssh().Transport(sock)
             try:
                 transport.start_client(timeout=8)
                 return {'fingerprint': fingerprint(transport.get_remote_server_key())}
@@ -438,8 +466,8 @@ class App:
             cfg = validate_kindle(dict(self.config['kindle']))
         if not cfg['fingerprint']:
             raise ValueError('First configure and verify the Kindle SSH host fingerprint.')
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(PinnedKey(cfg['fingerprint']))
+        client = ssh().SSHClient()
+        client.set_missing_host_key_policy(pinned_key(cfg['fingerprint']))
         args = {'hostname': cfg['host'], 'port': cfg['port'], 'username': 'root', 'timeout': 8,
                 'banner_timeout': 8, 'auth_timeout': 8, 'allow_agent': False, 'look_for_keys': False}
         args['pkey'] = self.key()[0]
@@ -451,6 +479,42 @@ class App:
         except Exception:
             client.close()
             raise
+
+    def warm_up(self):
+        """Start connecting and running the live Kindle checks in the background.
+
+        Called when a reading starts being prepared, so the SSH handshake and checks
+        overlap with conversion; send() then picks up the ready connection.
+        """
+        with self.lock:
+            if self.info()['send_blocked_reason'] or (self.warm and not self.warm[1].done()):
+                return
+            from concurrent.futures import Future
+            future = Future()
+            self.warm = (time.monotonic(), future)
+
+        def connect():
+            try:
+                future.set_result(self.connect())
+            except Exception as error:
+                future.set_exception(error)
+        threading.Thread(target=connect, daemon=True).start()
+
+    def take_connection(self):
+        """A pre-warmed connection if one is fresh and alive, else a new one."""
+        with self.lock:
+            warm, self.warm = self.warm, None
+        if warm:
+            started, future = warm
+            try:
+                client, cfg = future.result(timeout=30)
+                transport = client.get_transport()
+                if time.monotonic() - started < WARM_SECONDS and transport and transport.is_active():
+                    return client, cfg
+                client.close()
+            except Exception:
+                pass  # connect again below and report that error, with its full context
+        return self.connect()
 
     def check_runtime(self, client):
         from .prerequisites import check_remote
@@ -487,7 +551,7 @@ class App:
 
     def _send(self, id):
         book = self.get_book(id)
-        client, cfg = self.connect()
+        client, cfg = self.take_connection()
         remote = cfg['inbox'] + '/' + book['filename']
         partial = remote + '.part-' + secrets.token_hex(4)
         refresh_requested, refresh_warning = False, None
@@ -496,15 +560,14 @@ class App:
                 sftp.get_channel().settimeout(30)
                 mkdirs(sftp, cfg['inbox'])
                 try:
-                    with sftp.open(remote, 'rb') as file:
-                        if hashlib.sha256(file.read(MAX_FILE + 1)).hexdigest() != book['sha256']:
-                            raise ValueError('A different file with the same name already exists on the Kindle.')
+                    sftp.stat(remote)
+                    if remote_sha256(client, sftp, remote) != book['sha256']:
+                        raise ValueError('A different file with the same name already exists on the Kindle.')
                 except FileNotFoundError:
                     try:
                         sftp.put(str(self.data / 'books' / book['filename']), partial)
-                        with sftp.open(partial, 'rb') as file:
-                            if hashlib.sha256(file.read(MAX_FILE + 1)).hexdigest() != book['sha256']:
-                                raise ValueError('The transferred EPUB failed checksum verification.')
+                        if remote_sha256(client, sftp, partial) != book['sha256']:
+                            raise ValueError('The transferred EPUB failed checksum verification.')
                         sftp.rename(partial, remote)
                     finally:
                         try:
@@ -629,6 +692,8 @@ def handler_for(app):
             if path.startswith('/api/kindle/') and self.client_address[0] != '127.0.0.1':
                 return self.response(403, {'error': 'Configure the Kindle from the PC.'})
             try:
+                if path in ('/api/upload', '/api/url'):
+                    app.warm_up()  # handshake and live checks overlap with conversion
                 if path == '/api/upload':
                     name = parse_qs(urlsplit(self.path).query).get('name', [None])[0]
                     result = app.add_file(self.read_body(), name)
@@ -655,10 +720,10 @@ def handler_for(app):
                     else:
                         return self.response(404, {'error': 'Route not found.'})
                 return self.response(200, result)
-            except paramiko.AuthenticationException:
-                return self.response(400, {'error': 'KOReader rejected authentication. Check the installed public key and SSH settings.'})
             except (socket.timeout, TimeoutError):
                 return self.response(400, {'error': 'Connection timed out. Check Wi-Fi, IP, port and that the Kindle is awake.'})
             except Exception as e:
+                if 'paramiko' in sys.modules and isinstance(e, sys.modules['paramiko'].AuthenticationException):
+                    return self.response(400, {'error': 'KOReader rejected authentication. Check the installed public key and SSH settings.'})
                 return self.response(400, {'error': str(e)[:600]})
     return Handler

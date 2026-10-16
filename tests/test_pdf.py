@@ -148,9 +148,7 @@ class PdfReflowTests(unittest.TestCase):
 
 def picture_pdf():
     """One text page with a large photo-like image and a small flat diagram."""
-    random.seed(7)
-    photo = Image.new('RGB', (3000, 2000))
-    photo.putdata([(random.randrange(256), random.randrange(256), random.randrange(256)) for _ in range(3000 * 2000)])
+    photo = Image.frombytes('RGB', (3000, 2000), random.Random(7).randbytes(3000 * 2000 * 3))
     diagram = Image.new('RGB', (600, 400), 'white')
     diagram.paste((20, 60, 200), (100, 100, 500, 300))
     book = BookWriter()
@@ -186,8 +184,9 @@ class EpubTests(unittest.TestCase):
         for name, data in self.book.assets.items():
             with Image.open(io.BytesIO(data)) as image:
                 self.assertLessEqual(image.width, 1264)
+                self.assertEqual(image.mode, 'L')  # e-ink screens are gray
                 kinds[image.format] = image.size
-        self.assertEqual(set(kinds), {'JPEG', 'PNG'})  # photo → JPEG, flat diagram → palette PNG
+        self.assertEqual(set(kinds), {'JPEG', 'PNG'})  # photo → JPEG, flat diagram → gray PNG
         self.assertEqual(kinds['JPEG'][0], 1264)
         self.assertLess(len(self.epub), 2_000_000)
 

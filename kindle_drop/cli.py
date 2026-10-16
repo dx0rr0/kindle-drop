@@ -130,7 +130,9 @@ def send(data, values):
         transfer()
     else:
         with state_lock(data):
-            transfer(App(data))
+            app = App(data)
+            app.warm_up()  # connect and check the Kindle while the reading is converted
+            transfer(app)
 
 
 def doctor():

@@ -1,6 +1,6 @@
 # Kindle Drop
 
-Send a public article URL, an EPUB or a PDF from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Articles are packaged as EPUB by Calibre and PDFs are reflowed into EPUB directly; SSH/SFTP delivers them and verifies their SHA-256 checksum.
+Send a public article URL, an EPUB or a PDF from your computer to a Kindle running KOReader, over your home Wi-Fi. Use Make from the terminal or a small local web app. Articles are packaged as EPUB by Calibre and PDFs are reflowed into EPUB directly; SSH/SFTP delivers them and the Kindle verifies their SHA-256 checksum; the connection and live device checks run while the reading is still being prepared.
 
 ```sh
 make send https://example.org/article
@@ -93,7 +93,7 @@ kindle send book.pdf
 
 ## PDFs
 
-PDFs with a text layer become reflowable EPUBs, so text adapts to the reader's font size instead of breaking at every printed line. The converter is local, CPU-only and uses no OCR or machine-learning models (PyMuPDF reads positioned text; a few seconds per book). It rebuilds paragraphs across lines, columns and pages from indents, gaps and line endings; joins hyphenated words using the book's own vocabulary; repairs broken ligature glyphs (e.g. "De˵ne" → "Define"); drops running headers, footers and page numbers; and keeps headings (as the table of contents), lists, code listings, shaded boxes, images, footnotes and sub/superscripts. The first page becomes the cover. Images are sized for e-reader screens (at most 1264×1680 px): JPEGs that already fit are kept byte for byte, photos and screenshots become JPEG, flat diagrams become palette PNG. The EPUB is written directly without Calibre, so an 800-page illustrated book converts in seconds, and the same PDF always produces the same EPUB.
+PDFs with a text layer become reflowable EPUBs, so text adapts to the reader's font size instead of breaking at every printed line. The converter is local, CPU-only and uses no OCR or machine-learning models (PyMuPDF reads positioned text; a few seconds per book). It rebuilds paragraphs across lines, columns and pages from indents, gaps and line endings; joins hyphenated words using the book's own vocabulary; repairs broken ligature glyphs (e.g. "De˵ne" → "Define"); drops running headers, footers and page numbers; and keeps headings (as the table of contents), lists, code listings, shaded boxes, images, footnotes and sub/superscripts. The first page becomes the cover. Images are prepared for e-ink: grayscale (Kindle screens have no color), at most 1264×1680 px, photos and screenshots as JPEG and flat diagrams as lossless PNG. The EPUB is written directly without Calibre, so an 800-page illustrated book converts in seconds, and the same PDF always produces the same EPUB.
 
 Scanned PDFs without text are rejected. Complex tables and mathematical formulas are kept as text in reading order, not as tables or equations. Use **Download EPUB** in the web app to review a conversion before sending it.
 

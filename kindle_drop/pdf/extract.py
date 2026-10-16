@@ -5,6 +5,7 @@ import re
 
 import pymupdf
 
+from .images import Exporter
 from .model import Line, Page, Picture, Rect, Span
 
 MAX_PAGES = 2000
@@ -130,9 +131,19 @@ def read_page(page):
 
 
 def read_document(doc):
-    return [read_page(page) for page in doc]
+    """All pages, plus their images encoded concurrently: ([Page], {picture key: (name, bytes)})."""
+    exporter, pages = Exporter(doc), []
+    try:
+        for page in doc:
+            pages.append(read_page(page))
+            for picture in pages[-1].pictures:
+                exporter.add(picture)
+    finally:
+        assets = exporter.finish()
+    return pages, assets
 
 
 def render_cover(doc):
     """Use the first page as cover art (JPEG bytes), the way a print edition would look."""
-    return doc[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), alpha=False).tobytes('jpeg', jpg_quality=85)
+    pixmap = doc[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), colorspace=pymupdf.csGRAY, alpha=False)
+    return pixmap.tobytes('jpeg', jpg_quality=85)

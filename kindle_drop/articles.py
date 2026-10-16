@@ -10,7 +10,6 @@ from urllib.parse import urljoin, urlsplit
 
 from lxml import etree, html
 from PIL import Image, ImageOps
-import trafilatura
 
 MAX_IMAGES = 32
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -83,6 +82,7 @@ def content_tree(raw, url):
         body = deepcopy(max(candidates, key=lambda n: len(n.text_content())))
         body.tag = 'div'
     else:
+        import trafilatura  # ~1 s to import; only needed for articles
         extracted = trafilatura.extract(raw, url=url, output_format='html', include_comments=False,
                                         include_tables=True, include_formatting=True,
                                         include_links=True, include_images=True)
@@ -171,6 +171,7 @@ def download_image(source, fetch):
 
 
 def build_article(raw, url, folder, fetch):
+    import trafilatura
     body, source_tree = content_tree(raw, url)
     metadata = trafilatura.extract_metadata(source_tree, default_url=url)
     title = (metadata.title if metadata else None) or source_tree.findtext('.//h1') or urlsplit(url).hostname or 'Article'

@@ -1,8 +1,10 @@
 """Integration tests with isolated storage and a real local SSH/SFTP server."""
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import tempfile
 import threading
@@ -12,7 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 from xml.etree import ElementTree as ET
 import zipfile
-from kindle_drop.app import App, handler_for, ThreadingHTTPServer, paramiko, fingerprint, validate_kindle, validate_public_url, epub_metadata
+from kindle_drop.app import App, handler_for, ThreadingHTTPServer, paramiko, fingerprint, remote_sha256, validate_kindle, validate_public_url, epub_metadata
 
 
 def sample_epub():
@@ -30,8 +32,23 @@ def sample_epub():
 
 
 class Auth(paramiko.ServerInterface):
-    def __init__(self, public):
-        self.public = public
+    def __init__(self, public, root=None, commands=None):
+        self.public, self.root, self.commands = public, root, commands
+
+    def check_channel_exec_request(self, channel, command):
+        """Emulate the Kindle's busybox `sha256sum '<path>'` for the fixture's file tree."""
+        words = shlex.split(command.decode())
+        if self.root is None or len(words) != 2 or words[0] != 'sha256sum':
+            return False
+        self.commands.append(words)
+        path = Path(self.root) / words[1].lstrip('/')
+
+        def reply():
+            channel.sendall(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {words[1]}\n'.encode())
+            channel.send_exit_status(0)
+            channel.close()
+        threading.Thread(target=reply, daemon=True).start()
+        return True
 
     def check_auth_publickey(self, username, key):
         return paramiko.AUTH_SUCCESSFUL if username == 'root' and key == self.public else paramiko.AUTH_FAILED
@@ -125,7 +142,7 @@ class SSHFixture:
         self.port = self.sock.getsockname()[1]
         self.sock.listen(5)
         self.host_key = paramiko.ECDSAKey.generate()
-        self.transports = []
+        self.transports, self.commands = [], []
         self.running = True
         def worker():
             while self.running:
@@ -138,7 +155,7 @@ class SSHFixture:
                 transport.set_subsystem_handler('sftp', paramiko.SFTPServer, Files, root=root)
                 self.transports.append(transport)
                 try:
-                    transport.start_server(server=Auth(public))
+                    transport.start_server(server=Auth(public, root, self.commands))
                 except (EOFError, OSError):
                     transport.close()
         self.thread = threading.Thread(target=worker, daemon=True)
@@ -292,6 +309,42 @@ class Tests(unittest.TestCase):
                     self.app.test_key()
         finally:
             fixture.close()
+
+    def test_send_reuses_warm_connection_and_hashes_on_the_kindle(self):
+        b = self.app.add_epub(sample_epub())
+        key = paramiko.ECDSAKey.generate()
+        key.write_private_key_file(str(self.app.data / 'kindle_key'))
+        (self.app.data / 'setup.json').write_text('{}')
+        fake_root = Path(self.tmp.name) / 'remote'
+        fake_root.mkdir()
+        fixture = SSHFixture(fake_root, key)
+        self.app.config['kindle'] = {'host': '127.0.0.1', 'port': fixture.port, 'inbox': '/mnt/us/documents',
+                                     'authorized_keys': '/mnt/us/koreader/settings/SSH/authorized_keys',
+                                     'fingerprint': fingerprint(fixture.host_key)}
+        try:
+            with patch('kindle_drop.app.validate_kindle', lambda x: x), patch.object(self.app, 'check_runtime'),                     patch.object(self.app, 'connect', wraps=self.app.connect) as connect:
+                self.app.warm_up()
+                self.app.warm_up()  # already warming: no second connection
+                self.app.send(b['id'])
+                self.assertEqual(connect.call_count, 1)
+            self.assertEqual(len(fixture.commands), 1)  # verified by sha256sum, not by downloading
+            self.assertEqual((fake_root / 'mnt/us/documents' / b['filename']).read_bytes(), sample_epub())
+        finally:
+            fixture.close()
+
+    def test_remote_hash_falls_back_to_reading_the_file(self):
+        class Client:
+            def exec_command(self, *args, **kwargs):
+                raise paramiko.SSHException('exec not permitted')
+
+        class Stream(io.BytesIO):
+            def prefetch(self):
+                pass
+
+        class SFTP:
+            def open(self, path, mode):
+                return Stream(b'book')
+        self.assertEqual(remote_sha256(Client(), SFTP(), '/mnt/us/a.epub'), hashlib.sha256(b'book').hexdigest())
 
 
 if __name__ == '__main__':

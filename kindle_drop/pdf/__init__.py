@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 import threading
 
 from .extract import open_pdf, read_document, render_cover
-from .images import export
 from .layout import reflow
 from .epub import epub_bytes
 from .render import chapters, document
@@ -63,14 +62,14 @@ def build_pdf(data, name=None):
     name is the file stem, used as title when the PDF metadata has none.
     """
     with MUPDF, open_pdf(data) as doc:
-        pages = read_document(doc)
-        if sum(len(line.text.strip()) for page in pages for line in page.lines) < MIN_TEXT:
-            raise ValueError('This PDF has no text layer (it is probably scanned). OCR is not supported.')
-        cover = render_cover(doc)
-        if sum(len(line.text.strip()) for line in pages[0].lines) < 40:
-            pages = pages[1:]  # the cover page itself; it is already the EPUB cover
-        metadata = doc.metadata or {}
-        assets = export(doc, [picture for page in pages for picture in page.pictures])
+        cover, metadata = render_cover(doc), doc.metadata or {}
+        pages, assets = read_document(doc)
+    if sum(len(line.text.strip()) for page in pages for line in page.lines) < MIN_TEXT:
+        raise ValueError('This PDF has no text layer (it is probably scanned). OCR is not supported.')
+    if sum(len(line.text.strip()) for line in pages[0].lines) < 40:
+        pages = pages[1:]  # the cover page itself; it is already the EPUB cover
+    kept = {picture.key for page in pages for picture in page.pictures}
+    assets = {key: value for key, value in assets.items() if key in kept}
     vocabulary = repair_glyphs(pages)
     blocks = reflow(pages)
     first_heading = next((' '.join(l.text.split()) for b in blocks if b.kind == 'heading' for l in b.lines[:1]), '')

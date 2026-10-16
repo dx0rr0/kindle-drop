@@ -9,7 +9,7 @@ import re
 import secrets
 import time
 
-from .app import atomic_json, fingerprint, paramiko
+from .app import atomic_json, fingerprint, ssh
 
 ASSETS = Path(__file__).parent / 'diagnostic'
 EXTENSION = 'extensions/kindle-drop-check'
@@ -148,9 +148,9 @@ def install_key(mount, data):
     keys.parent.mkdir(parents=True, exist_ok=True)
     private = data / 'kindle_key'
     if private.exists():
-        key = paramiko.ECDSAKey.from_private_key_file(str(private))
+        key = ssh().ECDSAKey.from_private_key_file(str(private))
     else:
-        key = paramiko.ECDSAKey.generate(bits=256)
+        key = ssh().ECDSAKey.generate(bits=256)
         # Exclusive creation and 0600 on Unix; Windows inherits the user's directory ACL.
         fd = os.open(private, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w', encoding='ascii', newline='\n') as stream:
