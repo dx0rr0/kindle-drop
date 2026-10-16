@@ -241,34 +241,39 @@ def process_names(client, sftp):
     return names
 
 
-def check_remote(client, data, evidence=None):
-    """Recheck firmware, executables, OTA state and actual SSH arguments before each send."""
+def check_remote(client, data, evidence=None, sftp=None):
+    """Recheck firmware, executables, OTA state and actual SSH arguments before each send.
+
+    sftp, when given, is used and left open (the send then reuses it).
+    """
     if evidence is None:
         setup = Path(data) / 'setup.json'
         if not setup.is_file():
             raise ValueError('The verified key setup is missing. Run make key after make verify.')
         evidence = json.loads(read_small(setup))
-    with client.open_sftp() as sftp:
-        sftp.get_channel().settimeout(15)
-        files = {'/mnt/us/' + relative: relative for relative in
-                 ('system/version.txt', 'koreader/dropbear', 'koreader/sftp-server', 'koreader/plugins/SSH.koplugin/main.lua')}
-        for path, value in remote_digests(client, sftp, list(files)).items():
-            if value != evidence['files'][files[path]]:
-                raise ValueError('The Kindle firmware or SSH installation changed. Repeat the USB diagnostic.')
-        for name in ('otaupd', 'otav3'):
-            path = '/usr/bin/' + name
-            if remote_exists(sftp, path) or not remote_exists(sftp, path + '.bck'):
-                raise ValueError('Live OTA protection is missing or inconclusive. Stop and repeat the diagnostic.')
-        pending = [name for name in sftp.listdir('/mnt/us') if
-                   (name.startswith('update') and name.endswith('.bin')) or name == 'update.bin.tmp.partial']
-        if pending:
-            raise ValueError('A pending Kindle update was found. Stop and inspect it before sending.')
-        pid = remote_bytes(sftp, '/tmp/dropbear_koreader.pid', 32).strip().decode('ascii')
-        if not pid.isdigit():
-            raise ValueError('Cannot identify the running KOReader SSH server.')
-        args = remote_bytes(sftp, f'/proc/{pid}/cmdline', 4096).split(b'\0')
-        if not args or b'dropbear' not in args[0] or any(arg.startswith(b'-') and b'n' in arg[1:] for arg in args):
-            raise ValueError('The SSH server is running with password bypass or unknown arguments.')
-        # Read process names to confirm the updater is not already running.
-        if any(name in (b'otaupd', b'otav3') for name in process_names(client, sftp)):
-            raise ValueError('A Kindle OTA updater is running.')
+    if sftp is None:
+        with client.open_sftp() as sftp:
+            sftp.get_channel().settimeout(15)
+            return check_remote(client, data, evidence, sftp)
+    files = {'/mnt/us/' + relative: relative for relative in
+             ('system/version.txt', 'koreader/dropbear', 'koreader/sftp-server', 'koreader/plugins/SSH.koplugin/main.lua')}
+    for path, value in remote_digests(client, sftp, list(files)).items():
+        if value != evidence['files'][files[path]]:
+            raise ValueError('The Kindle firmware or SSH installation changed. Repeat the USB diagnostic.')
+    for name in ('otaupd', 'otav3'):
+        path = '/usr/bin/' + name
+        if remote_exists(sftp, path) or not remote_exists(sftp, path + '.bck'):
+            raise ValueError('Live OTA protection is missing or inconclusive. Stop and repeat the diagnostic.')
+    pending = [name for name in sftp.listdir('/mnt/us') if
+               (name.startswith('update') and name.endswith('.bin')) or name == 'update.bin.tmp.partial']
+    if pending:
+        raise ValueError('A pending Kindle update was found. Stop and inspect it before sending.')
+    pid = remote_bytes(sftp, '/tmp/dropbear_koreader.pid', 32).strip().decode('ascii')
+    if not pid.isdigit():
+        raise ValueError('Cannot identify the running KOReader SSH server.')
+    args = remote_bytes(sftp, f'/proc/{pid}/cmdline', 4096).split(b'\0')
+    if not args or b'dropbear' not in args[0] or any(arg.startswith(b'-') and b'n' in arg[1:] for arg in args):
+        raise ValueError('The SSH server is running with password bypass or unknown arguments.')
+    # Read process names to confirm the updater is not already running.
+    if any(name in (b'otaupd', b'otav3') for name in process_names(client, sftp)):
+        raise ValueError('A Kindle OTA updater is running.')

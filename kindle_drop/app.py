@@ -454,7 +454,10 @@ class App:
         try:
             client.connect(**args)
             client.get_transport().set_keepalive(15)
-            self.check_runtime(client)
+            # The send reuses this SFTP session: opening another costs up to ~0.1 s on a Kindle.
+            client.checked_sftp = client.open_sftp()
+            client.checked_sftp.get_channel().settimeout(15)
+            self.check_runtime(client, client.checked_sftp)
             return client, cfg
         except Exception:
             client.close()
@@ -496,9 +499,9 @@ class App:
                 pass  # connect again below and report that error, with its full context
         return self.connect()
 
-    def check_runtime(self, client):
+    def check_runtime(self, client, sftp=None):
         from .prerequisites import check_remote
-        check_remote(client, self.data)
+        check_remote(client, self.data, sftp=sftp)
 
     def test_key(self):
         client, _ = self.connect()
@@ -536,7 +539,10 @@ class App:
         partial = remote + '.part-' + secrets.token_hex(4)
         refresh_requested, refresh_warning = False, None
         try:
-            with client.open_sftp() as sftp:
+            sftp = getattr(client, 'checked_sftp', None)
+            if sftp is None or sftp.get_channel().closed:
+                sftp = client.open_sftp()
+            with sftp:
                 sftp.get_channel().settimeout(30)
                 mkdirs(sftp, cfg['inbox'])
                 try:
