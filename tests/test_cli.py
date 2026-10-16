@@ -135,6 +135,24 @@ class CliTests(unittest.TestCase):
                     (remote / 'proc/123/cmdline').write_bytes(b'./dropbear\0-n\0')
                     with self.assertRaisesRegex(ValueError, 'password bypass'):
                         app.send(app.books[0]['id'])
+                    (remote / 'proc/123/cmdline').write_bytes(b'./dropbear\0-E\0-R\0-p2222\0')
+                    # Every live check refuses on its own, and a restored device sends again.
+                    dropbear = remote / 'mnt/us/koreader/dropbear'
+                    original = dropbear.read_bytes()
+                    for change, message in ((lambda: dropbear.write_bytes(b'replaced binary'), 'installation changed'),
+                                            (lambda: dropbear.unlink(), 'No such file'),
+                                            (lambda: (remote / 'mnt/us/update_kindle_5.18.bin').write_bytes(b'x'), 'pending Kindle update'),
+                                            (lambda: (remote / 'proc/456').mkdir() or (remote / 'proc/456/comm').write_bytes(b'otaupd\n'), 'updater is running')):
+                        with self.subTest(message=message):
+                            change()
+                            with self.assertRaisesRegex(Exception, message):
+                                app.send(app.books[0]['id'])
+                            dropbear.write_bytes(original)
+                            (remote / 'mnt/us/update_kindle_5.18.bin').unlink(missing_ok=True)
+                            shutil.rmtree(remote / 'proc/456', ignore_errors=True)
+                    self.assertIn('verified on the Kindle', app.send(app.books[0]['id'])['message'])
+                    # The installation was hashed on the device in one command, not downloaded.
+                    self.assertTrue(any(len(words) == 5 and words[0] == 'sha256sum' for words in fixture.commands))
             finally:
                 server.shutdown()
                 server.server_close()

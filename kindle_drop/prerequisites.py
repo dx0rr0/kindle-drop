@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import time
 
 from .app import atomic_json, fingerprint, ssh
@@ -192,6 +193,29 @@ def remote_exists(sftp, path):
         return False
 
 
+def remote_digests(client, sftp, paths):
+    """SHA-256 of each Kindle file, by one busybox `sha256sum` on the device.
+
+    Downloading the SSH binaries to hash them on the PC took ~250 ms per send. Each digest
+    is still compared with the one recorded during the USB check, so a wrong answer cannot
+    pass; any file without a well-formed line in the output is read over SFTP as before.
+    """
+    digests = {}
+    try:
+        _, stdout, _ = client.exec_command('sha256sum ' + ' '.join(shlex.quote(p) for p in paths), timeout=30)
+        for line in stdout.read(64 * 1024).decode('utf-8', 'replace').splitlines():
+            value, _, path = line.partition('  ')
+            if re.fullmatch(r'[0-9a-f]{64}', value) and path in paths:
+                digests[path] = value
+        stdout.channel.recv_exit_status()
+    except Exception:
+        digests = {}
+    for path in paths:
+        if path not in digests:
+            digests[path] = digest(remote_bytes(sftp, path, 32 * 1024 * 1024))
+    return digests
+
+
 def process_names(client, sftp):
     """Names of all running processes on the Kindle.
 
@@ -226,8 +250,10 @@ def check_remote(client, data, evidence=None):
         evidence = json.loads(read_small(setup))
     with client.open_sftp() as sftp:
         sftp.get_channel().settimeout(15)
-        for relative in ('system/version.txt', 'koreader/dropbear', 'koreader/sftp-server', 'koreader/plugins/SSH.koplugin/main.lua'):
-            if digest(remote_bytes(sftp, '/mnt/us/' + relative, 32 * 1024 * 1024)) != evidence['files'][relative]:
+        files = {'/mnt/us/' + relative: relative for relative in
+                 ('system/version.txt', 'koreader/dropbear', 'koreader/sftp-server', 'koreader/plugins/SSH.koplugin/main.lua')}
+        for path, value in remote_digests(client, sftp, list(files)).items():
+            if value != evidence['files'][files[path]]:
                 raise ValueError('The Kindle firmware or SSH installation changed. Repeat the USB diagnostic.')
         for name in ('otaupd', 'otav3'):
             path = '/usr/bin/' + name

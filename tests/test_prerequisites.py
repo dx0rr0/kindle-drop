@@ -207,3 +207,42 @@ class ProcessNameTests(unittest.TestCase):
             sftp = FakeProc({1: b'init', 7: b'otav3', 9: b'dropbear'})
             self.assertEqual(sorted(checks.process_names(client, sftp)), [b'dropbear', b'init', b'otav3'])
             self.assertEqual(sftp.reads, 3)
+
+
+class FakeFiles:
+    """SFTP view of a few Kindle files, counting downloads."""
+    def __init__(self, files):
+        self.files, self.reads = files, []
+
+    def open(self, path, mode):
+        import io
+        self.reads.append(path)
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return io.BytesIO(self.files[path])
+
+
+class RemoteDigestTests(unittest.TestCase):
+    FILES = {'/mnt/us/a': b'first', '/mnt/us/b c': b'second'}
+
+    def expected(self):
+        return {path: checks.digest(data) for path, data in self.FILES.items()}
+
+    def test_one_command_hashes_every_file(self):
+        output = ''.join(f'{value}  {path}\n' for path, value in self.expected().items()).encode()
+        sftp = FakeFiles(self.FILES)
+        self.assertEqual(checks.remote_digests(FakeClient(output), sftp, list(self.FILES)), self.expected())
+        self.assertEqual(sftp.reads, [])
+
+    def test_doubtful_answers_fall_back_to_downloading(self):
+        first = self.expected()['/mnt/us/a']
+        for output in (None, b'', b'not a digest  /mnt/us/a\n', f'{first}  /mnt/us/other\n'.encode(),
+                       f'{first}  /mnt/us/a\n'.encode()):  # unavailable, empty, malformed, unknown path, partial
+            with self.subTest(output=output):
+                sftp = FakeFiles(self.FILES)
+                self.assertEqual(checks.remote_digests(FakeClient(output), sftp, list(self.FILES)), self.expected())
+                self.assertTrue(sftp.reads)
+
+    def test_missing_file_still_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            checks.remote_digests(FakeClient(b''), FakeFiles({}), ['/mnt/us/missing'])

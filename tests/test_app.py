@@ -36,16 +36,22 @@ class Auth(paramiko.ServerInterface):
         self.public, self.root, self.commands = public, root, commands
 
     def check_channel_exec_request(self, channel, command):
-        """Emulate the Kindle's busybox `sha256sum '<path>'` for the fixture's file tree."""
+        """Emulate the Kindle's busybox `sha256sum <path>...` for the fixture's file tree."""
         words = shlex.split(command.decode())
-        if self.root is None or len(words) != 2 or words[0] != 'sha256sum':
+        if self.root is None or len(words) < 2 or words[0] != 'sha256sum':
             return False
         self.commands.append(words)
-        path = Path(self.root) / words[1].lstrip('/')
 
         def reply():
-            channel.sendall(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {words[1]}\n'.encode())
-            channel.send_exit_status(0)
+            status = 0
+            for name in words[1:]:
+                path = Path(self.root) / name.lstrip('/')
+                if path.is_file():
+                    channel.sendall(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {name}\n'.encode())
+                else:  # busybox reports the file on stderr, keeps going and exits 1
+                    channel.sendall_stderr(f'sha256sum: {name}: No such file or directory\n'.encode())
+                    status = 1
+            channel.send_exit_status(status)
             channel.close()
         threading.Thread(target=reply, daemon=True).start()
         return True
