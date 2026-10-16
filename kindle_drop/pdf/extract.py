@@ -5,7 +5,6 @@ import re
 
 import pymupdf
 
-from ..articles import normalize_image
 from .model import Line, Page, Picture, Rect, Span
 
 MAX_PAGES = 2000
@@ -13,7 +12,8 @@ MIN_PICTURE = 30  # points; smaller images are icons or decorations
 MONO = re.compile(r'mono|courier|typewriter|consol|menlo|inconsolata|code', re.I)
 BOLD = re.compile(r'bold|medi|semibold|demi|black|heavy', re.I)
 ITALIC = re.compile(r'ital|oblique', re.I)
-TEXT_FLAGS = pymupdf.TEXT_PRESERVE_IMAGES | pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP
+# Images are located separately (get_image_info) so text extraction never decodes them.
+TEXT_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP
 
 
 def open_pdf(data):
@@ -48,14 +48,26 @@ def mark_scripts(spans):
             s.sub = not s.sup and shift > 0.1 * main.size
 
 
-def picture(number, block):
-    box = Rect(*block['bbox'])
-    if box.width < MIN_PICTURE or box.height < MIN_PICTURE:
-        return None
-    try:
-        return Picture(number, box, normalize_image(block['image']))
-    except Exception:
-        return None
+def pictures(page):
+    """Locate images and their PDF objects without decoding them.
+
+    get_image_info(xrefs=True) hashes every decoded image to find its xref, which is
+    slow on illustrated books; matching by pixel size against the page's image list is
+    exact unless two images share a size, and only then is the slow path used.
+    """
+    infos = page.get_image_info()
+    by_size = {}
+    for item in page.get_images(full=True):
+        by_size.setdefault((item[2], item[3]), set()).add(item[0])
+    if any(len(by_size.get((i['width'], i['height']), ())) != 1 for i in infos):
+        infos = page.get_image_info(xrefs=True)
+    found = []
+    for info in infos:
+        box = Rect(*info['bbox'])
+        if box.width >= MIN_PICTURE and box.height >= MIN_PICTURE:
+            xref = info.get('xref') or next(iter(by_size.get((info['width'], info['height']), {0})))
+            found.append(Picture(page.number, box, xref))
+    return found
 
 
 def marks(page):
@@ -104,13 +116,9 @@ def read_page(page):
     number = page.number
     result = Page(number, page.rect.width, page.rect.height)
     result.bullets, result.frames = marks(page)
+    result.pictures = pictures(page)
     for block in page.get_text('dict', flags=TEXT_FLAGS)['blocks']:
-        if block['type'] == 1:
-            found = picture(number, block)
-            if found:
-                result.pictures.append(found)
-            continue
-        for raw in block['lines']:
+        for raw in block.get('lines', ()):
             if abs(raw['dir'][1]) > 0.1:
                 continue  # rotated margin text
             spans = [span(s) for s in raw['spans'] if s['text']]
@@ -125,7 +133,6 @@ def read_document(doc):
     return [read_page(page) for page in doc]
 
 
-def render_cover(doc, path):
-    """Use the first page as cover art, the way a print edition would look."""
-    pixmap = doc[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), alpha=False)
-    pixmap.save(str(path), jpg_quality=85)
+def render_cover(doc):
+    """Use the first page as cover art (JPEG bytes), the way a print edition would look."""
+    return doc[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5), alpha=False).tobytes('jpeg', jpg_quality=85)

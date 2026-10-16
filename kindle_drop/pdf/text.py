@@ -84,3 +84,20 @@ def should_dehyphenate(head, tail, vocabulary):
 
 def collapse(text):
     return re.sub(r'[\s ]+', ' ', text)
+
+
+STOPWORDS = {
+    'en': {'the', 'and', 'of', 'to', 'is', 'that', 'with', 'for', 'this', 'are'},
+    'es': {'el', 'la', 'de', 'que', 'los', 'las', 'del', 'para', 'con', 'una'},
+    'fr': {'le', 'les', 'des', 'est', 'une', 'pour', 'dans', 'qui', 'pas', 'sur'},
+    'de': {'der', 'die', 'und', 'das', 'ist', 'nicht', 'mit', 'den', 'ein', 'sich'},
+    'it': {'il', 'che', 'della', 'per', 'una', 'sono', 'gli', 'del', 'non', 'nel'},
+    'pt': {'que', 'não', 'uma', 'para', 'com', 'os', 'das', 'dos', 'ao', 'mais'},
+}
+
+
+def guess_language(vocabulary):
+    """Readers hyphenate by the declared language, so a frequent-word vote is worth having."""
+    scores = {lang: sum(vocabulary.words[w] for w in words) for lang, words in STOPWORDS.items()}
+    best = max(scores, key=scores.get)
+    return best if scores[best] else 'en'

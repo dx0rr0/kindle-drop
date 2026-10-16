@@ -6,14 +6,14 @@ rebuild paragraphs, lists, code and asides from geometry → render semantic HTM
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import hashlib
-from pathlib import Path
 import threading
 
 from .extract import open_pdf, read_document, render_cover
+from .images import export
 from .layout import reflow
-from .render import document
-from .text import Vocabulary, ligature_map, replacements
+from .epub import epub_bytes
+from .render import chapters, document
+from .text import Vocabulary, guess_language, ligature_map, replacements
 
 MIN_TEXT = 200  # characters; less than this means a scanned PDF
 MUPDF = threading.Lock()  # PyMuPDF must not be used from several threads at once
@@ -21,12 +21,25 @@ MUPDF = threading.Lock()  # PyMuPDF must not be used from several threads at onc
 
 @dataclass
 class PdfBook:
-    html: str
+    chapters: list
     title: str
     author: str
-    cover: Path | None
-    images: int
+    language: str
+    assets: dict[str, bytes]  # images/... referenced by the chapters
+    cover: bytes | None  # JPEG
     warnings: list[str] = field(default_factory=list)
+
+    @property
+    def images(self):
+        return len(self.assets)
+
+    @property
+    def html(self):
+        """The whole book as one HTML page, for review and tests (images are not inlined)."""
+        return document(self.chapters, self.title, self.language)
+
+    def epub(self, identifier):
+        return epub_bytes(self.chapters, self.title, self.author, self.language, identifier, self.assets, self.cover)
 
 
 def repair_glyphs(pages):
@@ -44,35 +57,25 @@ def repair_glyphs(pages):
     return Vocabulary([line.text for page in pages for line in page.lines])
 
 
-def write_pictures(blocks, folder):
-    names = {}
-    for block in blocks:
-        if block.picture is not None:
-            name = 'images/' + hashlib.sha256(block.picture.png).hexdigest()[:20] + '.png'
-            target = Path(folder) / name
-            target.parent.mkdir(exist_ok=True)
-            target.write_bytes(block.picture.png)
-            names[id(block.picture)] = name
-    return names
+def build_pdf(data, name=None):
+    """Reflow PDF bytes into chapters and e-reader sized images, all in memory.
 
-
-def build_pdf(data, folder, name=None):
-    """Convert PDF bytes to HTML in folder (with images/ and cover.jpg); name is the file stem."""
+    name is the file stem, used as title when the PDF metadata has none.
+    """
     with MUPDF, open_pdf(data) as doc:
         pages = read_document(doc)
         if sum(len(line.text.strip()) for page in pages for line in page.lines) < MIN_TEXT:
             raise ValueError('This PDF has no text layer (it is probably scanned). OCR is not supported.')
-        cover = Path(folder) / 'cover.jpg'
-        render_cover(doc, cover)
+        cover = render_cover(doc)
         if sum(len(line.text.strip()) for line in pages[0].lines) < 40:
             pages = pages[1:]  # the cover page itself; it is already the EPUB cover
         metadata = doc.metadata or {}
+        assets = export(doc, [picture for page in pages for picture in page.pictures])
     vocabulary = repair_glyphs(pages)
     blocks = reflow(pages)
-    names = write_pictures(blocks, folder)
     first_heading = next((' '.join(l.text.split()) for b in blocks if b.kind == 'heading' for l in b.lines[:1]), '')
     file_title = ' '.join((name or '').replace('_', ' ').split())
     title = (metadata.get('title') or '').strip() or file_title or first_heading or 'PDF document'
     author = (metadata.get('author') or '').strip() or 'Unknown author'
-    html = document(blocks, title, vocabulary, lambda picture: names[id(picture)])
-    return PdfBook(html, title, author, cover, len(set(names.values())))
+    sections = chapters(blocks, vocabulary, lambda picture: assets.get(picture.key, (None,))[0])
+    return PdfBook(sections, title, author, guess_language(vocabulary), dict(assets.values()), cover)

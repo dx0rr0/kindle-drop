@@ -1,18 +1,24 @@
-"""Serialize layout blocks as semantic HTML that Calibre packages into a reflowable EPUB."""
+"""Serialize layout blocks as XHTML chapters for the EPUB, plus one review page."""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from html import escape
+import re
 from statistics import median
 
 from ..articles import CSS as ARTICLE_CSS
 from .text import collapse, should_dehyphenate
 
+XML_INVALID = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
+TAG = re.compile(r'<[^>]+>')
 PLAIN = (False, False, False, False, False)
 TAGS = ((2, 'code'), (0, 'strong'), (1, 'em'), (3, 'sup'), (4, 'sub'))  # Span.style index → element
 CSS = ARTICLE_CSS + '''
 aside.box { margin: 1.2em 0; padding: .6em .8em; border: 1px solid #999; background: #f2f2f2; }
 aside.box p:last-child { margin-bottom: 0; }
 p.note { font-size: .85em; color: #444; }
+.cover { margin: 0; padding: 0; text-align: center; }
+.cover img { max-width: 100%; max-height: 100%; }
 '''
 
 
@@ -47,7 +53,7 @@ def inline(parts):
         else:
             runs.append([style, text])
     output, pending_space = [], False
-    for index, (style, text) in enumerate(runs):
+    for style, text in runs:
         lead, core, tail = text[:1] == ' ', text.strip(), text[-1:] == ' '
         if not core:
             pending_space = pending_space or lead
@@ -77,9 +83,10 @@ def code(block):
     return '<pre><code>' + escape('\n'.join(output), quote=False) + '</code></pre>'
 
 
-def element(block, vocabulary, image_name):
+def element(block, vocabulary, image_name, anchor=''):
     if block.kind == 'figure':
-        return f'<figure><img src="{escape(image_name(block.picture))}" alt=""/></figure>'
+        name = image_name(block.picture)
+        return f'<figure><img src="{escape(name)}" alt=""/></figure>' if name else ''
     if block.kind == 'code':
         return code(block)
     parts = joined(block.lines, vocabulary)
@@ -90,16 +97,29 @@ def element(block, vocabulary, image_name):
         return ''
     if block.kind == 'heading':
         level = block.level
-        attributes = ' class="chapter"' if level == 1 else ''
+        attributes = (' class="chapter"' if level == 1 else '') + (f' id="{anchor}"' if anchor else '')
         return f'<h{level}{attributes}>{content}</h{level}>'
     if block.kind == 'note':
         return f'<p class="note">{content}</p>'
     return f'<li>{content}</li>' if block.kind == 'item' else f'<p>{content}</p>'
 
 
-def body(blocks, vocabulary, image_name):
-    output, region, in_list = [], None, False
-    for block in blocks:
+@dataclass
+class Chapter:
+    """One EPUB content file: starts at a level-1 heading (or holds the front matter)."""
+    parts: list[str] = field(default_factory=list)
+    headings: list[tuple[int, str, str]] = field(default_factory=list)  # (level, text, anchor)
+
+    @property
+    def html(self):
+        return XML_INVALID.sub('', '\n'.join(part for part in self.parts if part))
+
+
+def chapters(blocks, vocabulary, image_name):
+    """Group rendered blocks into chapters, wrapping list items and boxed asides."""
+    result, region, in_list = [Chapter()], None, False
+    for index, block in enumerate(blocks):
+        output = result[-1].parts
         if in_list and (block.kind != 'item' or block.region != region):
             output.append('</ul>')
             in_list = False
@@ -109,19 +129,36 @@ def body(blocks, vocabulary, image_name):
             if block.region is not None:
                 output.append('<aside class="box">')
             region = block.region
+        anchor = f'h{index}' if block.kind == 'heading' else ''
+        html = element(block, vocabulary, image_name, anchor)
+        if block.kind == 'heading' and html:
+            # Containers are closed above (headings sit outside lists and asides), so split here.
+            if block.level == 1 and any(result[-1].parts):
+                result.append(Chapter())
+            result[-1].headings.append((block.level, ' '.join(TAG.sub('', html).split()), anchor))
         if block.kind == 'item' and not in_list:
-            output.append('<ul>')
+            result[-1].parts.append('<ul>')
             in_list = True
-        output.append(element(block, vocabulary, image_name))
+        result[-1].parts.append(html)
     if in_list:
-        output.append('</ul>')
+        result[-1].parts.append('</ul>')
     if region is not None:
-        output.append('</aside>')
-    return '\n'.join(part for part in output if part)
+        result[-1].parts.append('</aside>')
+    return [chapter for chapter in result if any(chapter.parts)]
 
 
-def document(blocks, title, vocabulary, image_name, language='en'):
+def xhtml(title, body, language='en', body_class=''):
+    attributes = f' class="{body_class}"' if body_class else ''
+    return ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" '
+            f'lang="{escape(language)}" xml:lang="{escape(language)}"><head><meta charset="utf-8"/>'
+            f'<title>{escape(title)}</title><link rel="stylesheet" type="text/css" href="style.css"/>'
+            f'</head><body{attributes}>\n{body}\n</body></html>\n')
+
+
+def document(sections, title, language='en'):
+    """The whole book as one standalone HTML page, for review and tests."""
     return (f'<!DOCTYPE html>\n<html lang="{escape(language)}"><head><meta charset="utf-8"/>'
-            f'<meta name="viewport" content="width=device-width, initial-scale=1"/>'
+            '<meta name="viewport" content="width=device-width, initial-scale=1"/>'
             f'<title>{escape(title)}</title><style>{CSS}</style></head><body>\n'
-            f'{body(blocks, vocabulary, image_name)}\n</body></html>\n')
+            + '\n'.join(chapter.html for chapter in sections) + '\n</body></html>\n')

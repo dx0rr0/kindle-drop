@@ -1,10 +1,13 @@
 import io
+import random
 import re
 import tempfile
 import unittest
+from xml.etree import ElementTree as ET
 import zipfile
 
 import pymupdf
+from PIL import Image
 
 from kindle_drop.app import App, epub_metadata
 from kindle_drop.pdf import build_pdf
@@ -83,8 +86,7 @@ def sample_pdf():
 
 
 def html_of(data):
-    with tempfile.TemporaryDirectory() as folder:
-        return build_pdf(data, folder).html
+    return build_pdf(data).html
 
 
 def paragraphs(html):
@@ -132,7 +134,7 @@ class PdfReflowTests(unittest.TestCase):
             self.assertNotIn(word[:4] + '-', hyphenated)
 
     def test_structure_headings_code_and_lists(self):
-        self.assertIn('<h1 class="chapter">Chapter 1 Deep Modules</h1>', self.html)
+        self.assertIn('<h1 class="chapter" id="h0">Chapter 1 Deep Modules</h1>', self.html)
         self.assertIn('<pre><code>int open(const char* path, int flags);\n    return fd;</code></pre>', self.html)
         self.assertIn('<ul>\n<li>How are files represented on disk?</li>\n<li>How are directories stored?</li>\n</ul>',
                       self.html)
@@ -142,6 +144,52 @@ class PdfReflowTests(unittest.TestCase):
         doc.new_page().draw_rect(pymupdf.Rect(10, 10, 200, 200), fill=(0.5, 0.5, 0.5))
         with self.assertRaisesRegex(ValueError, 'no text layer'):
             html_of(doc.tobytes())
+
+
+def picture_pdf():
+    """One text page with a large photo-like image and a small flat diagram."""
+    random.seed(7)
+    photo = Image.new('RGB', (3000, 2000))
+    photo.putdata([(random.randrange(256), random.randrange(256), random.randrange(256)) for _ in range(3000 * 2000)])
+    diagram = Image.new('RGB', (600, 400), 'white')
+    diagram.paste((20, 60, 200), (100, 100, 500, 300))
+    book = BookWriter()
+    book.paragraph(PROSE * 3)
+    for image, rect in ((photo, (72, 300, 472, 560)), (diagram, (72, 580, 372, 680))):
+        buffer = io.BytesIO()
+        image.save(buffer, 'PNG')
+        book.page.insert_image(pymupdf.Rect(*rect), stream=buffer.getvalue())
+    return book.bytes()
+
+
+class EpubTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.book = build_pdf(picture_pdf(), 'Pictures')
+        cls.epub = cls.book.epub('urn:test')
+
+    def test_epub_container_is_valid_and_deterministic(self):
+        self.assertEqual(self.book.epub('urn:test'), self.epub)
+        with zipfile.ZipFile(io.BytesIO(self.epub)) as z:
+            names = z.namelist()
+            self.assertEqual(names[0], 'mimetype')
+            self.assertEqual(z.getinfo('mimetype').compress_type, zipfile.ZIP_STORED)
+            for name in names:
+                if name.endswith(('.xhtml', '.opf', '.ncx', '.xml')):
+                    ET.fromstring(z.read(name))  # well-formed XML, as EPUB readers require
+            nav = z.read('OEBPS/nav.xhtml').decode()
+        self.assertIn('epub:type="toc"', nav)
+        self.assertEqual(epub_metadata(self.epub), ('Pictures', 'Unknown author'))
+
+    def test_images_are_sized_and_encoded_for_e_readers(self):
+        kinds = {}
+        for name, data in self.book.assets.items():
+            with Image.open(io.BytesIO(data)) as image:
+                self.assertLessEqual(image.width, 1264)
+                kinds[image.format] = image.size
+        self.assertEqual(set(kinds), {'JPEG', 'PNG'})  # photo → JPEG, flat diagram → palette PNG
+        self.assertEqual(kinds['JPEG'][0], 1264)
+        self.assertLess(len(self.epub), 2_000_000)
 
 
 class PdfAppTests(unittest.TestCase):

@@ -86,7 +86,12 @@ class Line:
 class Picture:
     page: int
     box: Rect
-    png: bytes
+    xref: int  # 0 for inline images, which have no PDF object of their own
+
+    @property
+    def key(self):
+        """Identity for de-duplication: the same image object drawn twice is exported once."""
+        return self.xref or (self.page, self.box.x0, self.box.y0)
 
 
 @dataclass

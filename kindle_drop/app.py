@@ -377,24 +377,15 @@ class App:
             raise ValueError('The PDF exceeds the 40 MB limit.')
         if not data.startswith(b'%PDF-'):
             raise ValueError('The file is not a PDF.')
-        self.require_calibre()
         digest = hashlib.sha256(data).hexdigest()
         with self.lock:
             existing = next((dict(b) for b in self.books if b.get('source_sha256') == digest), None)
         if existing:
             return existing
         from .pdf import build_pdf
-        with tempfile.TemporaryDirectory(dir=self.data) as folder:
-            pdf = build_pdf(data, folder, safe_text(name or ''))
-            src, dst = Path(folder) / 'book.html', Path(folder) / 'book.epub'
-            src.write_text(pdf.html, encoding='utf-8')
-            # h1 are chapters (page break + TOC), h2/h3 nest below them in the TOC.
-            if not self.calibre_html(src, dst, pdf.title, pdf.author, '--cover', str(pdf.cover),
-                                     '--chapter', '//h:h1', '--level1-toc', '//h:h1',
-                                     '--level2-toc', '//h:h2', '--level3-toc', '//h:h3', timeout=300):
-                raise ValueError('Calibre could not package the PDF as EPUB.')
-            book = self.add_epub(dst.read_bytes(), source)
-            return self.annotate_book(book['id'], source_sha256=digest, images=pdf.images, warnings=pdf.warnings)
+        pdf = build_pdf(data, safe_text(name or ''))
+        book = self.add_epub(pdf.epub(f'urn:sha256:{digest}'), source)
+        return self.annotate_book(book['id'], source_sha256=digest, images=pdf.images, warnings=pdf.warnings)
 
     def add_file(self, data, name=None):
         """Queue an uploaded EPUB or PDF, recognized by its leading bytes."""
