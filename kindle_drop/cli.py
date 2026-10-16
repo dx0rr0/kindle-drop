@@ -232,6 +232,7 @@ def main():
     p.add_argument('--destination', default=os.environ.get('KD_DESTINATION') or None)
     sub.add_parser('install-refresh', help='Install the optional KOReader file browser auto-refresh companion')
     sub.add_parser('test')
+    sub.add_parser('ping', help='Check whether the paired Kindle and its SSH server are reachable')
     p = sub.add_parser('send', help='Convert and send URLs or EPUBs to the Kindle')
     p.add_argument('inputs', nargs='*')
     p = sub.add_parser('open')
@@ -248,6 +249,16 @@ def main():
             doctor()
         elif args.command == 'open':
             open_web(args.data, args.port, args.lan, args.no_browser, args.alias_port)
+        elif args.command == 'ping':
+            # Read-only: works while the web app runs and never touches the key or the queue.
+            from .reach import ping
+            config = args.data / 'config.json'
+            kindle = json.loads(config.read_text(encoding='utf-8')).get('kindle', {}) if config.is_file() else {}
+            if not kindle.get('host'):
+                raise ValueError('This profile is not paired with a Kindle yet. Run make pair HOST=... first.')
+            ready, message = ping(kindle)
+            print(message)
+            return 0 if ready else 1
         elif args.command == 'install-refresh':
             server = running_server(args.data)
             if server:

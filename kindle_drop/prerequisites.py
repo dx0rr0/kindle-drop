@@ -192,6 +192,31 @@ def remote_exists(sftp, path):
         return False
 
 
+def process_names(client, sftp):
+    """Names of all running processes on the Kindle.
+
+    One `cat` of every /proc/<pid>/comm replaces ~100 SFTP round trips (about 3 s on a
+    Kindle). The listing must include our own dropbear to count; otherwise, or if the
+    command is unavailable, every name is read over SFTP as before.
+    """
+    try:
+        _, stdout, _ = client.exec_command('cat /proc/[0-9]*/comm 2>/dev/null', timeout=15)
+        names = [line.strip() for line in stdout.read(1024 * 1024).splitlines() if line.strip()]
+        stdout.channel.recv_exit_status()  # 1 when a process exits mid-listing; names stay valid
+        if b'dropbear' in names:
+            return names
+    except Exception:
+        pass
+    names = []
+    for entry in sftp.listdir('/proc'):
+        if entry.isdigit():
+            try:
+                names.append(remote_bytes(sftp, f'/proc/{entry}/comm', 256).strip())
+            except FileNotFoundError:
+                continue  # Processes can disappear while being inspected.
+    return names
+
+
 def check_remote(client, data, evidence=None):
     """Recheck firmware, executables, OTA state and actual SSH arguments before each send."""
     if evidence is None:
@@ -219,11 +244,5 @@ def check_remote(client, data, evidence=None):
         if not args or b'dropbear' not in args[0] or any(arg.startswith(b'-') and b'n' in arg[1:] for arg in args):
             raise ValueError('The SSH server is running with password bypass or unknown arguments.')
         # Read process names to confirm the updater is not already running.
-        for entry in sftp.listdir('/proc'):
-            if entry.isdigit():
-                try:
-                    name = remote_bytes(sftp, f'/proc/{entry}/comm', 256).strip()
-                except FileNotFoundError:
-                    continue  # Processes can disappear while being inspected.
-                if name in (b'otaupd', b'otav3'):
-                    raise ValueError('A Kindle OTA updater is running.')
+        if any(name in (b'otaupd', b'otav3') for name in process_names(client, sftp)):
+            raise ValueError('A Kindle OTA updater is running.')

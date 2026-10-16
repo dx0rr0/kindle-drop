@@ -89,7 +89,7 @@ kindle send "A book.epub" other.epub
 kindle send book.pdf
 ```
 
-`kindle test`, `kindle open` and the other commands also work. State is read from `KINDLE_DROP_DATA`, else `./.kindle-drop` when that directory exists, else a per-user directory (`%USERPROFILE%\.kindle-drop` on Windows, `~/.local/share/kindle-drop` elsewhere). To use an existing repo profile globally, move `.kindle-drop/` to that per-user directory; `make` falls back to it too.
+`kindle ping` checks, without touching the device, whether the Kindle is awake and its SSH server is running. `kindle test`, `kindle open` and the other commands also work. State is read from `KINDLE_DROP_DATA`, else `./.kindle-drop` when that directory exists, else a per-user directory (`%USERPROFILE%\.kindle-drop` on Windows, `~/.local/share/kindle-drop` elsewhere). To use an existing repo profile globally, move `.kindle-drop/` to that per-user directory; `make` falls back to it too.
 
 ## PDFs
 

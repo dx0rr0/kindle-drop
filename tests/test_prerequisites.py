@@ -156,3 +156,54 @@ class PrerequisiteTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'outside'):
             checks.install_key(self.mount, self.data)
         self.assert_no_key()
+
+
+class FakeStream:
+    def __init__(self, data):
+        self.data = data
+        self.channel = self
+
+    def read(self, limit=-1):
+        return self.data
+
+    def recv_exit_status(self):
+        return 0
+
+
+class FakeClient:
+    def __init__(self, output=None):
+        self.output = output
+
+    def exec_command(self, command, timeout=None):
+        if self.output is None:
+            raise OSError('exec unavailable')
+        return None, FakeStream(self.output), None
+
+
+class FakeProc:
+    """SFTP view of /proc with the given process names."""
+    def __init__(self, names):
+        self.names = names
+        self.reads = 0
+
+    def listdir(self, path):
+        return [str(pid) for pid in self.names] + ['self', 'meminfo']
+
+    def open(self, path, mode):
+        self.reads += 1
+        import io
+        return io.BytesIO(self.names[int(path.split('/')[2])] + b'\n')
+
+
+class ProcessNameTests(unittest.TestCase):
+    def test_one_command_lists_processes(self):
+        sftp = FakeProc({1: b'init'})
+        names = checks.process_names(FakeClient(b'init\ndropbear\notaupd\n'), sftp)
+        self.assertIn(b'otaupd', names)
+        self.assertEqual(sftp.reads, 0)
+
+    def test_falls_back_to_sftp_without_exec_or_plausible_output(self):
+        for client in (FakeClient(None), FakeClient(b'')):  # no exec, or a listing without our server
+            sftp = FakeProc({1: b'init', 7: b'otav3', 9: b'dropbear'})
+            self.assertEqual(sorted(checks.process_names(client, sftp)), [b'dropbear', b'init', b'otav3'])
+            self.assertEqual(sftp.reads, 3)
