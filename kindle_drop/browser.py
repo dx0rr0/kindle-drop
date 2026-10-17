@@ -148,7 +148,7 @@ class Browser:
         except BaseException:
             self.close()
             raise
-        self.next_id, self.events = 0, []
+        self.next_id = 0
 
     def calls(self, commands):
         """Send [(method, session, params)] at once; the browser works on them in parallel.
@@ -170,9 +170,7 @@ class Browser:
                 error = reply.get('error')
                 results[reply['id']] = RuntimeError(f"{pending[reply['id']]}: {error.get('message')}") if error \
                     else reply.get('result', {})
-            elif 'method' in reply:
-                self.events.append((reply.get('sessionId'), reply['method']))
-        return [results[first + number] for number in range(len(commands))]
+        return [results[first + number] for number in range(len(commands))]  # events are ignored
 
     def call(self, method, session=None, **params):
         result = self.calls([(method, session, params)])[0]
@@ -180,14 +178,20 @@ class Browser:
             raise result
         return result
 
-    def wait_event(self, session, method):
-        deadline = time.monotonic() + self.timeout
-        while (session, method) not in self.events:
-            if time.monotonic() > deadline:
-                raise RuntimeError(f'Timed out waiting for {method}.')
-            reply = json.loads(self.socket.receive())
-            if 'method' in reply:
-                self.events.append((reply.get('sessionId'), reply['method']))
+    def wait_loaded(self, sessions):
+        """The sessions whose own data: document finished loading within the timeout.
+
+        Polled, not taken from load events: a new window's about:blank fires one too, and on
+        a busy machine it can arrive after navigation started.
+        """
+        deadline, waiting, ready = time.monotonic() + self.timeout, list(sessions), set()
+        while waiting and time.monotonic() < deadline:
+            states = self.evaluate([(session, READY) for session in waiting])
+            ready.update(session for session, state in zip(waiting, states) if state)
+            waiting = [session for session in waiting if session not in ready]
+            if waiting:
+                time.sleep(0.05)
+        return [session for session in sessions if session in ready]
 
     def evaluate(self, scripts):
         """The JSON value of each (session, expression), all at once (None where it failed)."""
@@ -209,8 +213,7 @@ class Browser:
         media = [{'name': 'prefers-color-scheme', 'value': 'light'}, {'name': 'prefers-reduced-motion', 'value': 'reduce'}]
         self.calls([command for session in sessions for command in (
             ('Emulation.setDeviceMetricsOverride', session, {'width': width, 'height': 800, 'deviceScaleFactor': SCALE, 'mobile': False}),
-            ('Emulation.setEmulatedMedia', session, {'features': media}),
-            ('Page.enable', session, {}))])
+            ('Emulation.setEmulatedMedia', session, {'features': media}))])
         self.calls([('Page.navigate', session, {'url': url}) for session, url in zip(sessions, urls)])
         return sessions
 
@@ -298,13 +301,7 @@ def render(documents, executable=None):
     with start(executables) as browser:
         sessions = browser.open(['data:text/html;charset=utf-8;base64,' + base64.b64encode(offline_document(markup).encode()).decode()
                                  for markup, _ in documents])
-        loaded = []
-        for session in sessions:
-            try:
-                browser.wait_event(session, 'Page.loadEventFired')
-                loaded.append(session)
-            except RuntimeError:
-                pass
+        loaded = browser.wait_loaded(sessions)
         wanted = {session: selectors for session, (_, selectors) in zip(sessions, documents)}
         captions = dict(zip(loaded, browser.evaluate([(session, CAPTIONS % json.dumps(wanted[session])) for session in loaded])))
         sizes = dict(zip(loaded, browser.evaluate([(session, PAGE_SIZE) for session in loaded])))
@@ -344,4 +341,5 @@ def render(documents, executable=None):
         return [results[session] for session in sessions]
 
 
+READY = "JSON.stringify(location.protocol === 'data:' && document.readyState === 'complete')"
 PAGE_SIZE = 'JSON.stringify([document.documentElement.scrollWidth, document.documentElement.scrollHeight])'
