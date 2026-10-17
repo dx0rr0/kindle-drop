@@ -233,7 +233,7 @@ class GraphicTests(unittest.TestCase):
         self.assertIn('Layers', ' '.join(t.text_content() for t in body.iter('table')))  # a table widget is text
 
     def test_without_a_browser_charts_keep_their_captions(self):
-        with patch('kindle_drop.browser.find_browser', return_value=None):
+        with patch('kindle_drop.browser.find_browsers', return_value=[]):
             article = build_article(chart_page(widget(WIDGET)), 'https://example.org/report', lambda *a, **k: 1 / 0)
         tree = html.fromstring(article.section.html)
         self.assertEqual(article.images, 0)

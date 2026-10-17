@@ -25,20 +25,30 @@ SETTLE = 0.5  # seconds for charts to draw once in view (with reduced motion, wi
 MAX_HEIGHT = 6000  # CSS pixels; taller renders are cut
 
 
-def find_browser():
+def find_browsers():
+    """Installed Chromium-based browsers, most likely to work first: Edge ships with Windows;
+    elsewhere Chrome and Chromium are the common installs."""
     candidates = []
     for base in (os.environ.get('PROGRAMFILES(X86)'), os.environ.get('PROGRAMFILES'), os.environ.get('LOCALAPPDATA')):
         if base:
             candidates += [Path(base) / 'Microsoft/Edge/Application/msedge.exe',
                            Path(base) / 'Google/Chrome/Application/chrome.exe']
     candidates += [Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
-                   Path('/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'),
-                   Path('/Applications/Chromium.app/Contents/MacOS/Chromium')]
-    for name in ('msedge', 'microsoft-edge', 'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome'):
+                   Path('/Applications/Chromium.app/Contents/MacOS/Chromium'),
+                   Path('/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge')]
+    for name in ('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome', 'msedge', 'microsoft-edge'):
         found = shutil.which(name)
         if found:
             candidates.append(Path(found))
-    return next((path for path in candidates if path.is_file()), None)
+    found = []
+    for path in candidates:
+        if path.is_file() and path.resolve() not in [p.resolve() for p in found]:
+            found.append(path)
+    return found
+
+
+def find_browser():
+    return next(iter(find_browsers()), None)
 
 
 class WebSocket:
@@ -226,6 +236,18 @@ class Browser:
         self.close()
 
 
+def start(executables):
+    """The first browser that starts. One may refuse to, for instance Linux Edge when its
+    sandbox helper is not installed setuid root; it is never run without its sandbox."""
+    errors = []
+    for executable in executables:
+        try:
+            return Browser(executable)
+        except RuntimeError as error:
+            errors.append(f'{executable}: {error}')
+    raise RuntimeError('; '.join(errors))
+
+
 STILL = '<style>*, *::before, *::after { transition: none !important; animation: none !important; }</style>'
 
 
@@ -270,10 +292,10 @@ def render(documents, executable=None):
     A selector of None captures the whole document; otherwise the first element it matches.
     All documents load at once, each in its own window, and each step runs on all of them together.
     """
-    executable = executable or find_browser()
-    if executable is None or not documents:
+    executables = [executable] if executable else find_browsers()
+    if not executables or not documents:
         return [[None] * len(selectors) for _, selectors in documents]
-    with Browser(executable) as browser:
+    with start(executables) as browser:
         sessions = browser.open(['data:text/html;charset=utf-8;base64,' + base64.b64encode(offline_document(markup).encode()).decode()
                                  for markup, _ in documents])
         loaded = []
