@@ -139,4 +139,4 @@ Article conversion preserves headings, paragraphs, emphasis, lists, quotations, 
 
 Limitations: JavaScript-only pages, logins, DRM, paywalls and interactive layouts are not supported. EPUBs are limited to 40 MB. This project does not block Amazon endpoints or alter firmware. Turn SSH off before joining unfamiliar networks. Re-run the diagnostic after firmware or KOReader changes.
 
-MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md) and [the security notes](SECURITY.md).
+MIT licensed. See [CONTRIBUTING.md](CONTRIBUTING.md).
