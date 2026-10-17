@@ -166,7 +166,7 @@ def convert(values, output=None, force=False):
 def doctor():
     from .app import find_calibre
     checks = {'Python 3.12+': sys.version_info >= (3, 12)}
-    for package in ('paramiko', 'trafilatura', 'Pillow', 'PyMuPDF'):
+    for package in ('paramiko', 'trafilatura', 'Pillow', 'PyMuPDF', 'latex2mathml'):
         try:
             checks[package + ' ' + importlib.metadata.version(package)] = True
         except importlib.metadata.PackageNotFoundError:
@@ -175,6 +175,8 @@ def doctor():
         print(f'{"PASS" if ok else "FAIL"}  {name}')
     # Optional: articles and PDFs are packaged without it; it only opens EPUBs in its library.
     print(f'{"PASS" if find_calibre("calibre").is_file() else "SKIP"}  Calibre (optional)')
+    from .browser import find_browser
+    print(f'{"PASS" if find_browser() else "SKIP"}  Edge or Chrome (optional: charts that web pages draw themselves)')
     if not all(checks.values()):
         raise ValueError('Install the missing PC prerequisites before Kindle setup. See docs/setup.md.')
 

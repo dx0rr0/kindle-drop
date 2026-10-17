@@ -2,7 +2,7 @@
 
 ## 1. Install the PC tools
 
-Install [Python 3.12 or later](https://www.python.org/downloads/), GNU Make and Git. [Calibre](https://calibre-ebook.com/download) is optional: articles and PDFs are converted without it, and it is only used to open a queued EPUB in its library. Use a native terminal: PowerShell/CMD on Windows, or your normal terminal on Linux/macOS.
+Install [Python 3.12 or later](https://www.python.org/downloads/), GNU Make and Git. [Calibre](https://calibre-ebook.com/download) is optional: articles and PDFs are converted without it, and it is only used to open a queued EPUB in its library. Microsoft Edge (included with Windows), Google Chrome or Chromium is optional too: when installed, charts that article pages draw themselves are kept as images. Use a native terminal: PowerShell/CMD on Windows, or your normal terminal on Linux/macOS.
 
 - Windows: Python must be callable from your terminal or supplied as `make install PYTHON="C:/path/to/python.exe"`. GNU Make for Windows (for example GnuWin32 Make or a suitable package from your package manager) must be on PATH. A default Calibre installation under Program Files is discovered automatically.
 - macOS: use a GNU Make package or the `make` supplied by your developer tools; a normal `/Applications/calibre.app` installation is detected.

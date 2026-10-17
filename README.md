@@ -18,6 +18,7 @@ This is an MVP for **already jailbroken Kindles**. It does not install a jailbre
 | --- | --- |
 | Python 3.12+, GNU Make, Git to clone the repo | A working jailbreak and its current hotfix |
 | Calibre is optional (only to open queued EPUBs in its library) | KOReader installed at `/mnt/us/koreader` |
+| Edge or Chrome is optional (to keep charts that article pages draw) | |
 | Dependencies installed by `make install` | KUAL able to execute extensions as root |
 | Same trusted LAN as the Kindle for sending | Firmware 5.11+ with OTA binaries disabled using the recognized `.bck` rename method |
 | A browser for `make open` | KOReader's SSH plugin, Dropbear and SFTP server; password bypass disabled |
@@ -95,6 +96,8 @@ kindle convert book.pdf
 ## Articles
 
 Article pages keep their structure (headings, lists, code, quotes, tables, captions) without site navigation or scripts, and their images are embedded for offline reading. The first suitable image of the article (or, without one, the page's preview card) becomes a portrait cover above the title and site name; articles without either get a typographic cover. Images use the same e-ink preparation as PDFs; screenshots stay lossless PNG unless that costs much more. Headings form the table of contents, the declared page language drives hyphenation, and site suffixes such as " | Wikipedia" are dropped from titles.
+
+Charts that a page draws itself (scripted widgets, SVG charts, bar charts and timelines built from HTML and CSS) become images: an installed Edge, Chrome or Chromium renders them headless, offline (a policy allowing only inline content, no network, no local files), at a phone-like width that keeps their labels legible, in gray on white paper, cut at blank rows into page-sized pieces, with their "Figure N" caption as text. Without such a browser, the article shows each chart's caption and a link to the original page. Formulas on pages typeset with MathJax or KaTeX (TeX between `\(`…`\)`, `\[`…`\]` or `$$`…`$$`) and MathML already in the page become MathML, which KOReader typesets; code is never treated as TeX.
 
 ## PDFs
 

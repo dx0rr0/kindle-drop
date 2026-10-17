@@ -75,7 +75,8 @@ def epub_bytes(chapters, title, author, language, identifier, assets, css, cover
     for number, chapter in enumerate(chapters, 1):
         name = f'chapter-{number:03}.xhtml'
         heading = next((text for _, text, _ in chapter.headings), title)
-        files.append((name, xhtml(heading, chapter.html, language).encode(), 'application/xhtml+xml', ''))
+        files.append((name, xhtml(heading, chapter.html, language).encode(), 'application/xhtml+xml',
+                      'mathml' if '<math' in chapter.html else ''))
         spine.append(name)
         entries.extend((level, text, f'{name}#{anchor}') for level, text, anchor in chapter.headings)
     if not entries:

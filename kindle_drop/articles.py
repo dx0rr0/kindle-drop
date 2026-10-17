@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlsplit
 from lxml import etree, html
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
-from . import eink, language
+from . import eink, formulas, language
 from .epub import Section, epub_bytes
 
 MAX_IMAGES = 32
@@ -29,6 +29,19 @@ ALLOWED = {'div', 'section', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol'
 REMOVE = {'script', 'style', 'iframe', 'object', 'embed', 'svg', 'button', 'input', 'form',
           'select', 'textarea', 'nav', 'aside', 'footer', 'header', 'noscript', 'template',
           'video', 'audio', 'canvas'}
+# Charts the page draws itself are rendered by a local browser (see browser.py).
+GRAPHIC = 'kd-graphic:'  # placeholder image source; the .png suffix keeps it through text extraction
+MAX_GRAPHICS = 16
+GRAPHIC_TEXT = 1500  # characters: a chart's labels, not a whole section of the article
+LABEL_TEXT = 300  # characters a containing block may add to a chart (legend, title, axis labels)
+GEOMETRY = re.compile(r'(?:^|;)\s*(?:width|height|transform|flex-basis)\s*:', re.I)
+FIGURE_LABEL = re.compile(r'^\s*(?:figure|fig\.|table|chart|diagram)\s*\d+[a-z]?\s*[:.–—-]', re.I)
+HIDDEN = ([], None)  # a rendered graphic the page does not display
+INK = 0.85  # darkens light tones of rendered charts: pastel colors are near-white on e-ink
+PAGE_RATIO = 1.3  # height / width of a rendered chart piece that fits one e-reader page
+MAX_STYLESHEETS = 40  # long illustrated articles ship a stylesheet per figure
+MAX_STYLESHEET_BYTES = 2 * 1024 * 1024
+MAX_STYLES_TOTAL = 8 * 1024 * 1024
 
 CSS = '''
 body { font-family: serif; line-height: 1.5; color: #111; }
@@ -56,6 +69,7 @@ pre code { font-size: 1em; }
 table { border-collapse: collapse; font-size: .85em; width: 100%; margin: 1em 0; }
 th, td { padding: .4em; border: 1px solid #999; text-align: left; }
 hr { margin: 1.4em 0; border: 0; border-top: 1px solid #999; }
+math[display="block"] { display: block; margin: .8em 0; text-align: center; }
 '''
 
 
@@ -102,9 +116,277 @@ def image_source(node, url):
     return src if src.startswith('data:') else urljoin(url, src)
 
 
+@dataclass
+class Graphic:
+    """A chart the page draws itself: a standalone document (a scripted widget) or, with
+    markup None, the page element marked data-kd-graphic=number."""
+    number: int
+    markup: str | None
+    alt: str
+
+
+def embedded_document(node):
+    """The standalone HTML of an iframe srcdoc or a base64 widget template, if any."""
+    if node.tag == 'iframe':
+        return node.get('srcdoc') or None
+    try:
+        return base64.b64decode(''.join(node.itertext()).strip(), validate=True).decode('utf-8')
+    except ValueError:
+        return None
+
+
+def squashed(node):
+    return ' '.join(node.text_content().split())
+
+
+def figure_label(root):
+    """A "Figure 3: ..." caption inside a graphic, used as its alternative text."""
+    for node in root.iter():
+        if isinstance(node.tag, str):
+            text = squashed(node)
+            if FIGURE_LABEL.match(text) and len(text) < 700 and not any(
+                    isinstance(child.tag, str) and FIGURE_LABEL.match(squashed(child)) for child in node):
+                return text
+    return ''
+
+
+def unmark_containers(node):
+    """Drop class and id from the containers holding only this node: names like "widget"
+    read as boilerplate to text extraction."""
+    text = squashed(node)
+    for ancestor in node.iterancestors():
+        if ancestor.tag in ('body', 'html') or squashed(ancestor) != text:
+            break
+        ancestor.attrib.pop('class', None)
+        ancestor.attrib.pop('id', None)
+
+
+def find_graphics(tree):
+    """Mark the charts a page draws itself and return them as Graphics.
+
+    Scripted widgets come as standalone documents (iframe srcdoc, base64 templates); a widget
+    holding only a table becomes ordinary article content instead. In the page itself, an SVG
+    with text labels or a block built from empty, sized elements (CSS bar charts) is a chart.
+    """
+    graphics = []
+
+    def add(node, markup, alt):
+        if len(graphics) < MAX_GRAPHICS:
+            node.set('data-kd-graphic', str(len(graphics)))
+            graphics.append(Graphic(len(graphics), markup, alt or 'Chart'))
+
+    for node in tree.xpath('//template[@data-widget-html] | //iframe[@srcdoc]'):
+        markup = embedded_document(node)
+        if not markup or not markup.strip() or node.getparent() is None:
+            continue
+        document = html.document_fromstring(markup)
+        drawn = document.xpath('//script | //svg | //canvas | //img')
+        for junk in document.xpath('//script | //style'):
+            junk.drop_tree()
+        body = document.find('body')
+        if body is None or not squashed(body):
+            continue
+        if document.xpath('//table') and not drawn:
+            content = html.Element('div')
+            content.text, content.tail = body.text, node.tail
+            content.extend(list(body))
+            node.getparent().replace(node, content)
+            unmark_containers(content)
+            continue
+        add(node, markup, figure_label(body))
+    inside = lambda node: any(a.get('data-kd-graphic') is not None or a.tag in ('a', 'button', 'nav', 'header', 'footer')
+                              for a in node.iterancestors())
+    for svg in tree.iter('svg'):
+        if len(svg.findall('.//text')) >= 2 and not inside(svg):
+            add(svg, None, svg.get('aria-label') or figure_label(svg))
+    counts = {}
+    for node in tree.iter():
+        if not isinstance(node.tag, str) or not GEOMETRY.search(node.get('style', '')) or squashed(node) or inside(node):
+            continue
+        # Grow to the block holding the bars and their labels, not into the surrounding prose.
+        chart = node
+        while (parent := chart.getparent()) is not None and parent.tag not in ('body', 'html') \
+                and len(squashed(parent)) <= min(GRAPHIC_TEXT, len(squashed(chart)) + LABEL_TEXT):
+            chart = parent
+        counts[chart] = counts.get(chart, 0) + 1
+    # A figure drawn in markup, not an image: many elements and little text (timelines, diagrams).
+    for figure in tree.iter('figure'):
+        if not inside(figure) and len(squashed(figure)) <= GRAPHIC_TEXT and sum(1 for _ in figure.iter()) >= 24 \
+                and not figure.xpath('.//img | .//picture | .//video | .//canvas | .//pre | .//table | .//blockquote'):
+            counts[figure] = 3
+    charts = [chart for chart, bars in counts.items() if bars >= 3 and squashed(chart) and chart.tag not in ('body', 'html')]
+    # Sibling charts sharing a legend or title (one per metric, say) are one chart.
+    merged = True
+    while merged:
+        merged = False
+        parents = {}
+        for chart in charts:
+            if chart.getparent() is not None:
+                parents.setdefault(chart.getparent(), []).append(chart)
+        for parent, children in parents.items():
+            text = len(squashed(parent))
+            extra = text - sum(len(squashed(child)) for child in children)
+            if len(children) >= 2 and parent.tag not in ('body', 'html') and text <= GRAPHIC_TEXT and extra <= LABEL_TEXT:
+                charts = [chart for chart in charts if chart not in children] + [parent]
+                merged = True
+                break
+    for chart in charts:
+        if not any(other in charts for other in chart.iterancestors()):
+            add(chart, None, chart.get('aria-label') or figure_label(chart))
+    return graphics
+
+
+def with_placeholders(tree, graphics):
+    """A copy of the page whose graphics are placeholder images, which text extraction keeps."""
+    copy = deepcopy(tree)
+    for node in copy.xpath('//*[@data-kd-graphic]'):
+        number = int(node.get('data-kd-graphic'))
+        image = html.Element('img', src=f'{GRAPHIC}{number}.png', alt=graphics[number].alt)
+        image.tail = node.tail
+        node.getparent().replace(node, image)
+        unmark_containers(image)
+    return copy
+
+
+def page_document(tree, url, fetch):
+    """The page with its stylesheets inlined and every script and external reference removed."""
+    page = deepcopy(tree)
+    links = [urljoin(url, node.get('href', '')) for node in page.xpath('//link[@href]')
+             if 'stylesheet' in node.get('rel', '').lower().split()]
+    links = [link for link in dict.fromkeys(links) if urlsplit(link).scheme in ('http', 'https')][:MAX_STYLESHEETS]
+
+    def stylesheet(link):
+        try:
+            return fetch(link, max_bytes=MAX_STYLESHEET_BYTES, timeout=12)[0].decode('utf-8', 'replace')
+        except Exception:
+            return ''  # the chart still renders, with the browser's default styles
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        sheets, total = [], 0
+        for sheet in pool.map(stylesheet, links):
+            total += len(sheet)
+            if total > MAX_STYLES_TOTAL:
+                break
+            sheets.append(sheet)
+    for node in page.xpath('//script | //noscript | //template | //iframe | //object | //embed | //link | //base'
+                           ' | //meta[@http-equiv]'):
+        node.drop_tree()
+    # Only the charts and their containers (whose classes style them): a short page lays out
+    # once, so the measured positions still hold when the browser captures it.
+    charts = page.xpath('//body//*[@data-kd-graphic]')
+    path = {ancestor for chart in charts for ancestor in chart.iterancestors()}
+
+    def kept(node):
+        # Styles anywhere in the page, and SVG definitions (gradients, symbols) charts may reference.
+        return node.tag == 'style' or node.tag == 'svg' and len(node) and all(
+            isinstance(child.tag, str) and child.tag in ('defs', 'symbol', 'style') for child in node)
+
+    def prune(node):
+        for child in list(node):
+            if child in path:
+                prune(child)
+            elif child not in charts and not kept(child):
+                child.drop_tree()
+
+    body = page.find('body')
+    if body is not None:
+        prune(body)
+    head = page.find('head')
+    if head is None:
+        head = html.Element('head')
+        page.insert(0, head)
+    style = html.Element('style')
+    style.text = '\n'.join(sheets).replace('</', '< /')
+    head.insert(0, style)
+    return html.tostring(page, encoding='unicode')
+
+
+def paper_white(image):
+    """Map a light page background (cream, light gray) to white paper, and darken the chart's
+    light tones so pastel series stay visible in 16 gray levels."""
+    edge = [image.getpixel((x, y)) for x in range(0, image.width, max(1, image.width // 32)) for y in (0, image.height - 1)]
+    if sorted(edge)[len(edge) // 2] < 128:
+        return image  # a chart drawn on a dark page stays as drawn
+    histogram = image.histogram()
+    paper = max(range(160, 256), key=lambda value: histogram[value])  # the most common light tone
+    levels = [min(255, value * 255 / paper) for value in range(256)]
+    return image.point([255 if level >= 250 else round(level * INK) for level in levels])
+
+
+def blank_row(image, y):
+    return image.crop((0, y, image.width, y + 1)).getextrema()[0] >= 245
+
+
+def encode_lossless(image):
+    """A prepared image from a lossless source: JPEG, unless crisp PNG costs at most 1.5x."""
+    data, extension = eink.save(image)
+    if extension == 'jpg':
+        crisp = eink.png(image)
+        if len(crisp) <= 1.5 * len(data):
+            data, extension = crisp, 'png'
+    return data, extension, image.size
+
+
+def graphic_parts(png):
+    """A rendered chart as gray images on white, trimmed and cut at blank rows into page-sized pieces."""
+    with Image.open(BytesIO(png)) as image:
+        image = paper_white(eink.gray(image))
+    box = image.point(lambda value: 255 if value < 243 else 0).getbbox()
+    if box is None:
+        raise ValueError('The chart is blank.')
+    pad = 16
+    image = image.crop((max(0, box[0] - pad), max(0, box[1] - pad),
+                        min(image.width, box[2] + pad), min(image.height, box[3] + pad)))
+    pieces, limit = [], max(200, round(image.width * PAGE_RATIO))
+    while image.height > limit:
+        # Cut in the middle of the widest blank band in the lower half of the page: between
+        # panels rather than under a panel's title.
+        cut, run, best = limit, 0, 0
+        for y in range(limit // 2, limit + 1):
+            run = run + 1 if blank_row(image, y) else 0
+            if run and run >= best:
+                cut, best = y - run // 2, run
+        pieces.append(image.crop((0, 0, image.width, cut)))
+        image = image.crop((0, cut, image.width, image.height))
+    pieces.append(image)
+    pieces = [piece for piece in pieces if piece.point(lambda value: 255 if value < 243 else 0).getbbox()]
+    return [encode_lossless(eink.prepare(piece)) for piece in pieces]
+
+
+def render_graphics(graphics, tree, url, fetch):
+    """{number: ([(bytes, extension, size)], caption)} for the graphics a local browser could draw,
+    and HIDDEN for those the page does not display (responsive variants)."""
+    from .browser import render
+    in_page = [graphic for graphic in graphics if graphic.markup is None]
+    documents, owners = [], []
+    if in_page:
+        documents.append((page_document(tree, url, fetch), [f'[data-kd-graphic="{g.number}"]' for g in in_page]))
+        owners.append(in_page)
+    for graphic in graphics:
+        if graphic.markup is not None:
+            documents.append((graphic.markup, [None]))
+            owners.append([graphic])
+    found = [(graphic, shot) for group, shots in zip(owners, render(documents)) for graphic, shot in zip(group, shots)]
+    shots = [(graphic, shot) for graphic, shot in found if shot]
+    hidden = {graphic.number: HIDDEN for graphic, shot in found if shot is False}
+
+    def pieces(item):
+        try:
+            return graphic_parts(item[1][0])
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        drawn = {graphic.number: (parts, shot[1]) for (graphic, shot), parts in zip(shots, pool.map(pieces, shots)) if parts}
+    return {**hidden, **drawn}
+
+
 def content_tree(raw, url):
+    """(article body, page tree, graphics): the body is sanitized and has graphic placeholders."""
     parser = html.HTMLParser(no_network=True)
-    tree = html.fromstring(raw, parser=parser)
+    page = html.fromstring(raw, parser=parser)
+    graphics = find_graphics(page)
+    tree = with_placeholders(page, graphics) if graphics else page
     # Prefer semantic article bodies: heuristic text extraction can discard pre/code and captions.
     candidates = tree.xpath('//*[@itemprop="articleBody"] | //article')
     candidates = [n for n in candidates if len(n.text_content().strip()) >= 120]
@@ -113,7 +395,8 @@ def content_tree(raw, url):
         body.tag = 'div'
     else:
         import trafilatura  # ~1 s to import; only needed for articles
-        extracted = trafilatura.extract(raw, url=url, output_format='html', include_comments=False,
+        source = html.tostring(tree, encoding='unicode') if graphics else raw
+        extracted = trafilatura.extract(source, url=url, output_format='html', include_comments=False,
                                         include_tables=True, include_formatting=True,
                                         include_links=True, include_images=True)
         if not extracted:
@@ -134,11 +417,19 @@ def content_tree(raw, url):
             node.drop_tree()
         else:
             node.set('src', image_source(node, url))
+    # The page's own MathML (KaTeX includes it beside its HTML rendering) stays typeset.
+    for node in list(body.iter('math')):
+        if node.getparent() is not None:
+            formula = formulas.mathml(node)
+            formula.tail = node.tail
+            node.getparent().replace(node, formula)
     for node in list(body.iterdescendants()):
         if not isinstance(node.tag, str):
             if node.getparent() is not None:
                 node.getparent().remove(node)
             continue
+        if node.tag.startswith('{'):
+            continue  # sanitized MathML
         tag = node.tag.lower()
         if tag in REMOVE or node.get('aria-hidden') == 'true' or node.get('hidden') is not None:
             node.drop_tree()
@@ -168,7 +459,7 @@ def content_tree(raw, url):
     body.attrib.clear()
     if len(body.text_content().strip()) < 120:
         raise ValueError('The page has too little readable text. Try the full article URL.')
-    return body, tree
+    return body, page, graphics
 
 
 @dataclass
@@ -205,13 +496,8 @@ def normalize_image(raw):
         lossless = image.format in LOSSLESS
         image.draft('L', (max(eink.MAX_SIZE),) * 2)  # EXIF rotation below may swap the sides
         image = eink.prepare(ImageOps.exif_transpose(image))
-    data, extension = eink.save(image)
-    if lossless and extension == 'jpg':
-        # Screenshots keep crisp text as PNG unless that costs much more than a JPEG.
-        crisp = eink.png(image)
-        if len(crisp) <= 1.5 * len(data):
-            data, extension = crisp, 'png'
-    return data, extension, image.size
+    # Screenshots keep crisp text as PNG unless that costs much more than a JPEG.
+    return encode_lossless(image) if lossless else (*eink.save(image), image.size)
 
 
 def download_image(source, fetch):
@@ -348,7 +634,10 @@ def clean_title(title, site, site_name=None):
 
 def build_article(raw, url, fetch):
     import trafilatura
-    body, source_tree = content_tree(raw, url)
+    body, source_tree, graphics = content_tree(raw, url)
+    dollars = formulas.renderer(source_tree)
+    if dollars is not None:
+        formulas.typeset(body, dollars)
     metadata = trafilatura.extract_metadata(source_tree, default_url=url)
     site = (urlsplit(url).hostname or '').removeprefix('www.')
     title = (metadata.title if metadata else None) or source_tree.findtext('.//h1') or urlsplit(url).hostname or 'Article'
@@ -364,11 +653,15 @@ def build_article(raw, url, fetch):
             heading.tag = 'h2'
     nodes = list(body.iter('img'))
     sources = list(dict.fromkeys(n.get('src', '') for n in nodes))
-    warnings, assets, names, total, picture = [], {}, {}, 0, None
+    placed = [graphics[int(src[len(GRAPHIC):-len('.png')])] for src in sources if src.startswith(GRAPHIC)]
+    sources = [src for src in sources if not src.startswith(GRAPHIC)]
+    warnings, assets, names, total, picture, drawn = [], {}, {}, 0, None, {}
     selected = sources[:MAX_IMAGES]
     # All downloads start at once on a few workers (each holds at most one original);
     # results are taken in document order, so the first suitable image is the cover.
     with ThreadPoolExecutor(max_workers=IMAGE_WORKERS) as pool:
+        # Charts render in a local browser meanwhile; they are never the cover.
+        rendering = pool.submit(render_graphics, placed, source_tree, url, fetch) if placed else None
         futures = [pool.submit(download_image, src, fetch) for src in selected]
         for src, future in zip(selected, futures):
             if total > MAX_TOTAL_IMAGES:
@@ -385,9 +678,42 @@ def build_article(raw, url, fetch):
                     picture = data
             except Exception:
                 warnings.append('An article image could not be embedded. Its original link is included.')
+        if rendering is not None:
+            try:
+                drawn = rendering.result()
+            except Exception:
+                drawn = {}
+    if placed and len(drawn) < len(placed):
+        from .browser import find_browser
+        warnings.append('Install Microsoft Edge or Google Chrome to include the charts this page draws; their captions are included.'
+                        if find_browser() is None else 'A chart could not be drawn; its caption is included.')
     for node in nodes:
         src = node.get('src', '')
-        if src in names:
+        if src.startswith(GRAPHIC):
+            graphic = graphics[int(src[len(GRAPHIC):-len('.png')])]
+            if drawn.get(graphic.number) is HIDDEN:
+                parent = node.getparent()
+                previous = node.getprevious()
+                if previous is not None:
+                    previous.tail = (previous.tail or '') + (node.tail or '')
+                else:
+                    parent.text = (parent.text or '') + (node.tail or '')
+                parent.remove(node)
+                continue
+            pieces, caption = drawn.get(graphic.number, ([], ''))
+            figure = html.Element('figure')
+            for data, extension, _ in pieces:
+                name = f'images/{hashlib.sha256(data).hexdigest()[:20]}.{extension}'
+                assets[name] = data
+                etree.SubElement(figure, 'img', src=name, alt=graphic.alt)
+            if caption or not pieces:
+                label = etree.SubElement(figure, 'figcaption')
+                label.text = caption if pieces else f'[Chart: {graphic.alt}] '
+                if not pieces:
+                    etree.SubElement(label, 'a', href=url).text = 'See it on the original page.'
+            figure.tail = node.tail
+            node.getparent().replace(node, figure)
+        elif src in names:
             node.set('src', names[src])
         else:
             alt = node.get('alt', 'Article image')
