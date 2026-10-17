@@ -195,14 +195,22 @@ def fetch_public(url, max_bytes=MAX_FILE, timeout=25):
 
 
 def local_ips():
+    """This PC's private LAN addresses: the interface it would use to reach each private range.
+
+    Connecting a UDP socket only selects a route and sends nothing. Resolving the hostname
+    instead can stall for tens of seconds (macOS waits on multicast DNS), and this runs on
+    every request.
+    """
     result = set()
-    try:
-        for a in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET):
-            address = ipaddress.ip_address(a[4][0])
-            if address.is_private and not address.is_loopback and not address.is_link_local:
-                result.add(str(address))
-    except OSError:
-        pass
+    for target in ('10.255.255.255', '172.31.255.255', '192.168.255.255'):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.connect((target, 9))
+                address = ipaddress.ip_address(probe.getsockname()[0])
+        except OSError:
+            continue  # no route to that range
+        if address.is_private and not address.is_loopback and not address.is_link_local and not address.is_unspecified:
+            result.add(str(address))
     return sorted(result)
 
 
