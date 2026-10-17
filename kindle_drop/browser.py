@@ -113,6 +113,7 @@ class Browser:
     def __init__(self, executable, timeout=20):
         self.timeout = timeout
         self.profile = tempfile.TemporaryDirectory(prefix='kindle-drop-browser-')
+        self.log = tempfile.TemporaryFile()  # the browser's own error output, for failure messages
         self.process = subprocess.Popen(
             [str(executable), '--headless=new', '--remote-debugging-port=0', f'--user-data-dir={self.profile.name}',
              '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-sync',
@@ -122,13 +123,15 @@ class Browser:
              '--disable-features=Translate,OptimizationHints,MediaRouter', '--mute-audio', '--hide-scrollbars',
              '--proxy-server=http://127.0.0.1:9', '--proxy-bypass-list=<-loopback>',
              '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', 'about:blank'],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=self.log)
         try:
             marker = Path(self.profile.name) / 'DevToolsActivePort'
             deadline = time.monotonic() + timeout
             while not marker.is_file() or len(marker.read_text().split()) < 2:
                 if self.process.poll() is not None or time.monotonic() > deadline:
-                    raise RuntimeError('The browser did not start.')
+                    self.log.seek(0)
+                    detail = self.log.read()[-600:].decode('utf-8', 'replace').strip()
+                    raise RuntimeError('The browser did not start' + (f': {detail}' if detail else '.'))
                 time.sleep(0.02)
             port, path = marker.read_text().split()[:2]
             self.socket = WebSocket(int(port), path, timeout)
@@ -210,6 +213,7 @@ class Browser:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
+        self.log.close()
         try:
             self.profile.cleanup()
         except OSError:

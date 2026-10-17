@@ -241,6 +241,30 @@ class GraphicTests(unittest.TestCase):
         self.assertTrue(tree.xpath('//figcaption/a[@href="https://example.org/report"]'))
         self.assertIn('Install Microsoft Edge or Google Chrome', ' '.join(article.warnings))
 
+    def render_report(self, fetch):
+        """What the browser returned for each chart, for a failure message (CI has no screen)."""
+        import traceback
+        from kindle_drop import articles, browser
+        page = html.fromstring(chart_page(widget(WIDGET), BARS))
+        graphics = find_graphics(page)
+        documents = [(g.markup, [None]) for g in graphics if g.markup is not None]
+        documents.append((articles.page_document(page, 'https://example.org/report', fetch),
+                          [f'[data-kd-graphic="{g.number}"]' for g in graphics if g.markup is None]))
+        try:
+            report = []
+            for found in browser.render(documents):
+                for shot in found:
+                    if not shot:
+                        report.append(repr(shot))
+                        continue
+                    try:
+                        report.append(f'{len(shot[0])} bytes, {len(graphic_parts(shot[0]))} pieces')
+                    except Exception as error:
+                        report.append(f'{len(shot[0])} bytes, parts failed: {error!r}')
+            return f'{find_browser()}: {report}'
+        except Exception:
+            return f'{find_browser()}: {traceback.format_exc()}'
+
     @unittest.skipUnless(find_browser(), 'no Chromium-based browser is installed')
     def test_charts_render_offline_as_gray_images(self):
         fetched = []
@@ -248,7 +272,8 @@ class GraphicTests(unittest.TestCase):
             fetched.append(url)
             raise ValueError('offline')
         article = build_article(chart_page(widget(WIDGET), BARS), 'https://example.org/report', fetch)
-        self.assertFalse(article.warnings)
+        if article.warnings:
+            self.fail(f'{article.warnings}: {self.render_report(fetch)}')
         self.assertEqual(fetched, [])  # no stylesheets to inline, and rendering itself never fetches
         tree = html.fromstring(article.section.html)
         figures = tree.findall('.//figure')
