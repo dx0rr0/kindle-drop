@@ -251,7 +251,9 @@ def start(executables):
     raise RuntimeError('; '.join(errors))
 
 
-STILL = '<style>*, *::before, *::after { transition: none !important; animation: none !important; }</style>'
+# Still frames, without the controls a page puts on its charts ("Download PNG") that mean nothing on paper.
+STILL = ('<style>*, *::before, *::after { transition: none !important; animation: none !important; }'
+         ' button[aria-label*="download" i], a[download] { visibility: hidden !important; }</style>')
 
 
 def offline_document(markup):

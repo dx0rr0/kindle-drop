@@ -104,7 +104,8 @@ def inputs_from_make(args):
     return expanded
 
 
-def send(data, values):
+def send(data, values, book=False):
+    """Readings go to the Kindle's articles folder; book=True packages and files them as books."""
     server = running_server(data)
     def transfer(app=None):
         for value in values:
@@ -117,14 +118,14 @@ def send(data, values):
             if server:
                 base, token = server
                 if is_url:
-                    book = api(base, token, '/api/url', json.dumps({'url': value}).encode())
+                    item = api(base, token, '/api/url', json.dumps({'url': value, 'book': book}).encode())
                 else:
                     kind = 'application/pdf' if data.startswith(b'%PDF-') else 'application/epub+zip'
-                    book = api(base, token, '/api/upload?' + urlencode({'name': file.stem}), data, kind)
-                result = api(base, token, f'/api/books/{book["id"]}/send', b'{}')
+                    item = api(base, token, '/api/upload?' + urlencode({'name': file.stem}), data, kind)
+                result = api(base, token, f'/api/books/{item["id"]}/send', json.dumps({'book': book}).encode())
             else:
-                book = app.add_url(value) if is_url else app.add_file(data, file.stem)
-                result = app.send(book['id'])
+                item = app.add_url(value, book) if is_url else app.add_file(data, file.stem)
+                result = app.send(item['id'], book)
             print(result['message'])
     if server:
         transfer()
@@ -264,9 +265,12 @@ def main():
     p.add_argument('--destination', default=os.environ.get('KD_DESTINATION') or None)
     sub.add_parser('install-refresh', help='Install the optional KOReader file browser auto-refresh companion')
     sub.add_parser('test')
+    sub.add_parser('organize', help='Move articles sent before the Artículos folder existed into it')
     sub.add_parser('ping', help='Check whether the paired Kindle and its SSH server are reachable')
     p = sub.add_parser('send', help='Convert and send URLs or EPUBs to the Kindle')
     p.add_argument('inputs', nargs='*')
+    p.add_argument('-l', '--book', action='store_true', default=os.environ.get('KD_BOOK') == '1',
+                   help='Send as a book: to the destination folder instead of its Artículos folder, with a plain cover')
     p = sub.add_parser('convert', help='Convert PDFs to EPUBs on this PC without sending them')
     p.add_argument('inputs', nargs='+')
     p.add_argument('-o', '--output', type=Path, help='EPUB file, or a directory for several PDFs (default: next to each PDF)')
@@ -304,7 +308,7 @@ def main():
                     result = App(args.data).install_refresh()
             print(result['message'])
         elif args.command == 'send':
-            send(args.data, inputs_from_make(args.inputs))
+            send(args.data, inputs_from_make(args.inputs), args.book)
         elif args.command == 'convert':
             convert(inputs_from_make(args.inputs), args.output, args.force)
         else:
@@ -320,6 +324,8 @@ def main():
                         print(json.dumps(result, indent=2))
                 elif args.command == 'pair':
                     pair(App(args.data), args.host, args.port, args.fingerprint, args.destination)
+                elif args.command == 'organize':
+                    print(App(args.data).organize()['message'])
                 elif args.command == 'test':
                     print(App(args.data).test_key()['message'])
         return 0

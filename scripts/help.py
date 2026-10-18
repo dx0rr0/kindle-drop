@@ -6,9 +6,11 @@ print("""Kindle Drop
   make key MOUNT=D:/        Reverify, create a key, install only its public portion
   make pair HOST=...        Inspect the SSH host fingerprint; repeat with FINGERPRINT=...
   make install-refresh     Install the optional KOReader auto-refresh companion
+  make organize            Move articles sent earlier into the Kindle's articles folder
   make test                Check key authentication and live prerequisites
   make send URL            Convert a public article and send its EPUB
   make send books/*.epub    Send matching EPUB files
+  make send BOOK=1 ...      Send as a book: destination folder, plain cover
   make send INPUT=\"...\"    Send one URL or path with spaces/query parameters
   make open                Start the web app and open your browser (Ctrl+C stops it)
   make open LAN=1           Also allow a phone on the same trusted network

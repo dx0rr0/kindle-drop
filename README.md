@@ -6,6 +6,7 @@ Send a public article URL, an EPUB or a PDF from your computer to a Kindle runni
 make send https://example.org/article
 make send books/*.epub
 make send books/paper.pdf
+make send BOOK=1 books/novel.epub
 make send INPUT="books/A book with spaces.epub"
 make open
 ```
@@ -64,8 +65,11 @@ make send https://example.org/article
 make send INPUT="https://example.org/article?a=1&b=2"
 make send books/*.epub
 make send first.epub second.epub
+make send BOOK=1 books/novel.epub
 make open
 ```
+
+Every reading is an article unless you say otherwise: it goes to the **`Artículos`** folder inside the destination, and a web article's cover gets an `ARTÍCULO` tab over its picture. Send it as a book with `kindle send -l` (or `make send BOOK=1`) to deliver it to the destination folder itself, with a plain cover. With the companion below, finished articles move to `Artículos/Leídos/<month>` on their own, so the folder only holds what is left to read.
 
 Find delivered books in **`/mnt/us/documents/KindleDrop`** using KOReader's file browser. Existing identical files are reused; a different file with the same name is never overwritten. The destination is saved in your Kindle profile and retained when pairing again. To choose a different folder, use `make pair HOST=... DESTINATION="/mnt/us/documents/Books"` during fingerprint inspection and acceptance. The current destination is shown in the web app, and each new successful send records the exact path. In KOReader, use the file browser and navigate to that folder; leave and re-enter it to reload the file list. If it remains stale, restart KOReader. Search by title if sorting places new books further down. History only contains books already opened. Sending an EPUB does not open it automatically or add it to the Amazon library. `make send` uses the running web app when available, so both interfaces share one queue safely.
 
@@ -88,6 +92,7 @@ uv tool install --python 3.12 -e .
 kindle send https://example.org/article
 kindle send "A book.epub" other.epub
 kindle send book.pdf
+kindle send -l "A novel.epub"
 kindle convert book.pdf
 ```
 
@@ -107,15 +112,17 @@ Scanned PDFs without text are rejected. Complex tables and mathematical formulas
 
 ## Automatic refresh in KOReader
 
-The optional companion refreshes the visible destination folder after a verified delivery:
+The optional companion refreshes the visible destination folder after a verified delivery, and files finished articles away:
 
 ```sh
 make install-refresh
 ```
 
-Keep the Kindle awake with SSH running for installation. The installer checks the required KOReader APIs and verifies uploaded bytes. It adds `kindle_drop_refresh.koplugin` under `/mnt/us/koreader/plugins`; updates keep a hidden backup and unrecognized existing plugins are not overwritten. Restart **KOReader once**, then start its SSH server again. In the file browser's Tools menu, **Kindle Drop auto refresh** can be toggled off or on.
+Keep the Kindle awake with SSH running for installation. The installer checks the required KOReader APIs and verifies uploaded bytes. It adds `kindle_drop_refresh.koplugin` under `/mnt/us/koreader/plugins`; updates keep a hidden backup and unrecognized existing plugins are not overwritten. Restart **KOReader once**, then start its SSH server again. In the file browser's Tools menu, **Kindle Drop auto refresh** and **Kindle Drop: file finished articles in Leídos** can be toggled off or on.
 
 After a successful send, the PC atomically replaces a small completion marker in KOReader's settings directory. The plugin checks it every five seconds only while the file browser is active and awake. It refreshes only the displayed destination folder, defers while a dialog/menu covers it, and preserves the folder and sort order. It never opens a book, interrupts reading, changes History, or connects to the network. A send remains successful even if requesting refresh fails; the web app reports the fallback. The marker confirms the request, not that the screen refreshed: the plugin must be loaded and enabled. Sorting by last read can still place unread books further down; search by title or choose date-added sorting.
+
+About once a minute while the file browser shows, the plugin also moves each article KOReader marks as finished from `Artículos` to `Artículos/Leídos/<year-month> <month>`, the same way cutting and pasting in the file browser does: its progress, highlights, History entry and collections move with it. Nothing is deleted, an article already filed under that name is left in place, and books outside `Artículos` are never touched. Articles sent before the `Artículos` folder existed move there with `kindle organize` (or `make organize`); the plugin carries them over the next time the file browser shows.
 
 Reinstall after replacing KOReader if its plugins folder was removed. Remove the plugin folder while KOReader is closed and restart it to uninstall. Companion APIs were checked against KOReader v2025.08; other versions are checked at installation, but need their own screen validation.
 

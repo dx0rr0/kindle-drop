@@ -124,7 +124,12 @@ class CliTests(unittest.TestCase):
                     with state_lock(data):
                         result = subprocess.run([sys.executable, '-m', 'kindle_drop', '--data', str(data), 'send', str(book)], capture_output=True, text=True)
                         self.assertEqual(result.returncode, 0, result.stderr)
-                    sent = list((remote / 'mnt/us/documents/KindleDrop').glob('*.epub'))
+                        # -l files the same reading as a book, in the destination folder itself.
+                        result = subprocess.run([sys.executable, '-m', 'kindle_drop', '--data', str(data), 'send', '-l', str(book)], capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual([p.read_bytes() for p in (remote / 'mnt/us/documents/KindleDrop').glob('*.epub')], [sample_epub()])
+                    self.assertEqual(app.books[0]['shelf'], 'book')
+                    sent = list((remote / 'mnt/us/documents/KindleDrop/Artículos').glob('*.epub'))
                     self.assertEqual(len(sent), 1)
                     self.assertEqual(sent[0].read_bytes(), sample_epub())
                     # An OTA regression blocks a subsequent send despite an existing key and pairing.

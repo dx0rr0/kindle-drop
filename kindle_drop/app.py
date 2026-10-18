@@ -37,6 +37,7 @@ ATOM = 'http://www.w3.org/2005/Atom'
 DC = 'http://purl.org/dc/elements/1.1/'
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 WARM_SECONDS = 90  # a pre-opened Kindle connection older than this is discarded
+ARTICLES = 'Artículos'  # readings go here inside the destination; books (send -l) go to the destination itself
 
 
 def ssh():
@@ -378,12 +379,12 @@ class App:
             self.save_books()
             return dict(saved)
 
-    def article(self, url, data):
+    def article(self, url, data, book=False):
         """Package a web article as EPUB directly: no Calibre, all in memory."""
         if len(data) > MAX_HTML:
             raise ValueError('The page exceeds the 8 MB HTML limit.')
         from .articles import build_article
-        article = build_article(data, url, fetch_public)
+        article = build_article(data, url, fetch_public, article=not book)
         book = self.add_epub(article.epub(), url)
         return self.annotate_book(book['id'], images=article.images, warnings=article.warnings)
 
@@ -409,7 +410,7 @@ class App:
             return self.add_pdf(data, name=name)
         return self.add_epub(data)
 
-    def add_url(self, url):
+    def add_url(self, url, book=False):
         url = url.strip()
         data, content_type, final_url = fetch_public(url)
         if content_type == 'application/epub+zip' or data[:4] == b'PK':
@@ -419,7 +420,7 @@ class App:
             return self.add_pdf(data, final_url, name)
         if content_type not in ('text/html', 'application/xhtml+xml'):
             raise ValueError('The URL must point to an EPUB, a PDF or an HTML article.')
-        return self.article(final_url, data)
+        return self.article(final_url, data, book)
 
     def key(self):
         path = self.data / 'kindle_key'
@@ -528,22 +529,68 @@ class App:
         finally:
             client.close()
 
-    def send(self, id):
+    def organize(self):
+        """Move web articles delivered before the articles folder existed into it, via the companion,
+        which carries their progress, highlights and History along. Books stay where they are."""
+        from .refresh import notify, queue_moves
+        client, cfg = self.connect()
+        articles = cfg['inbox'] + '/' + ARTICLES
+        with self.lock:
+            # Web articles are the readings Kindle Drop packaged itself from a page (they record images).
+            candidates = [dict(b) for b in self.books if b.get('status') == 'Sent' and b.get('shelf') is None
+                          and str(b.get('source', '')).startswith(('http://', 'https://'))
+                          and 'images' in b and 'source_sha256' not in b
+                          and b.get('remote_path') == cfg['inbox'] + '/' + b['filename']]
+        try:
+            with client.open_sftp() as sftp:
+                sftp.get_channel().settimeout(30)
+                # Only articles still where they were delivered, and never onto a file already there.
+                moves = [b for b in candidates if self._exists(sftp, b['remote_path'])
+                         and not self._exists(sftp, articles + '/' + b['filename'])]
+                if not moves:
+                    return {'moved': [], 'message': 'No earlier articles to move: every article is already in ' + articles + '.'}
+                mkdirs(sftp, articles)
+                queue_moves(sftp, [(b['remote_path'], articles + '/' + b['filename']) for b in moves])
+                notify(sftp, articles, articles)
+        finally:
+            client.close()
+        with self.lock:
+            for b in self.books:
+                if any(m['id'] == b['id'] for m in moves):
+                    b.update(remote_path=articles + '/' + b['filename'], shelf='article')
+            self.save_books()
+        titles = ', '.join(b['title'] for b in moves)
+        return {'moved': [b['id'] for b in moves],
+                'message': f'{len(moves)} articles will move to {articles} the next time the KOReader file browser is open, '
+                           f'within about a minute: {titles}.'}
+
+    @staticmethod
+    def _exists(sftp, path):
+        try:
+            sftp.stat(path)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def send(self, id, book=False):
+        """Deliver to the articles folder, or with book=True to the destination folder itself."""
         with self.lock:
             self.get_book(id)
             if id in self.active_sends:
                 raise ValueError('This reading is already being sent.')
             self.active_sends.add(id)
         try:
-            return self._send(id)
+            return self._send(id, book)
         finally:
             with self.lock:
                 self.active_sends.discard(id)
 
-    def _send(self, id):
+    def _send(self, id, as_book=False):
         book = self.get_book(id)
         client, cfg = self.take_connection()
-        remote = cfg['inbox'] + '/' + book['filename']
+        articles = cfg['inbox'] + '/' + ARTICLES
+        folder = cfg['inbox'] if as_book else articles
+        remote = folder + '/' + book['filename']
         partial = remote + '.part-' + secrets.token_hex(4)
         refresh_requested, refresh_warning = False, None
         try:
@@ -552,7 +599,7 @@ class App:
                 sftp = client.open_sftp()
             with sftp:
                 sftp.get_channel().settimeout(30)
-                mkdirs(sftp, cfg['inbox'])
+                mkdirs(sftp, folder)
                 try:
                     sftp.stat(remote)
                     if remote_sha256(client, sftp, remote) != book['sha256']:
@@ -570,12 +617,12 @@ class App:
                             pass
                 from .refresh import notify
                 try:
-                    refresh_requested = notify(sftp, cfg['inbox'])
+                    refresh_requested = notify(sftp, folder, articles)
                 except Exception:
                     refresh_warning = 'The EPUB was delivered, but automatic refresh could not be requested. Re-enter Home to reload it.'
             with self.lock:
                 b = next(b for b in self.books if b['id'] == id)
-                b.update(status='Sent', sent_at=now(), remote_path=remote)
+                b.update(status='Sent', sent_at=now(), remote_path=remote, shelf='book' if as_book else 'article')
                 self.save_books()
             guidance = 'Auto refresh requested. With the companion loaded and enabled, the visible destination folder refreshes within about five seconds.' if refresh_requested else 'In KOReader, leave and re-enter the destination folder, or restart KOReader to reload the list.'
             return {'remote_path': remote, 'refresh_requested': refresh_requested, 'refresh_warning': refresh_warning, 'message': f'EPUB verified on the Kindle: {remote}. {refresh_warning or guidance} Search by title if needed.'}
@@ -689,12 +736,12 @@ def handler_for(app):
                 if path in ('/api/upload', '/api/url'):
                     app.warm_up()  # handshake and live checks overlap with conversion
                 if path == '/api/upload':
-                    name = parse_qs(urlsplit(self.path).query).get('name', [None])[0]
+                    name = parse_qs(urlsplit(self.path).query).get('name', [None])[0]  # files are packaged the same either way
                     result = app.add_file(self.read_body(), name)
                 else:
                     data = json.loads(self.read_body(16384))
                     if path == '/api/url':
-                        result = app.add_url(str(data.get('url', '')))
+                        result = app.add_url(str(data.get('url', '')), data.get('book') is True)
                     elif path == '/api/kindle/install-refresh':
                         result = app.install_refresh()
                     elif path == '/api/kindle/test':
@@ -702,7 +749,7 @@ def handler_for(app):
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/remove', path):
                         result = app.remove_book(path.split('/')[3])
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/send', path):
-                        result = app.send(path.split('/')[3])
+                        result = app.send(path.split('/')[3], data.get('book') is True)
                     elif re.fullmatch(r'/api/books/[a-f0-9]{16}/calibre', path):
                         if self.client_address[0] != '127.0.0.1':
                             raise ValueError('Open Calibre from the PC.')

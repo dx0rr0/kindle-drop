@@ -194,6 +194,31 @@ class ArticleImageTests(unittest.TestCase):
         self.assertEqual(article.images, 0)  # used for the cover only, not inserted in the text
         self.assertIsNotNone(article.cover)
 
+    def test_figures_survive_pages_without_an_article_element(self):
+        # Text extraction drops <figure> outside <article>, with its image and caption.
+        prose = ''.join(f'<p>Paragraph {n} carries enough article prose about review layers, checks and '
+                        'approvals to be read as the main text of this page by the extractor.</p>' for n in range(5))
+        page = (f'<html lang="en"><head><title>Review layers</title></head><body><div class="prose"><h1>Review layers</h1>'
+                f'<section>{prose}<figure class="art-fig"><img class="fg" src="/media/diagram.png" alt="A diagram">'
+                f'<figcaption>FIG A The path of a change</figcaption></figure>{prose}</section></div></body></html>')
+        article = build_article(page.encode(), 'https://example.org/post', lambda url, **kw: (photo_bytes(), 'image/jpeg', url))
+        self.assertEqual(article.images, 1)
+        chapter = article.section.html
+        self.assertIn('FIG A The path of a change', chapter)
+        self.assertNotIn('<p><figure', chapter)
+        self.assertLess(chapter.index('Paragraph 4'), chapter.index('<figure'))
+
+    def test_article_covers_carry_a_tab_and_books_do_not(self):
+        fetch = lambda url, **kwargs: (photo_bytes(), 'image/jpeg', url)
+        covers = [Image.open(BytesIO(build_article(ARTICLE.encode(), 'https://example.org/article', fetch, article=kind).cover))
+                  for kind in (True, False)]
+        tab = (40, 44, 400, 148)
+        labeled, plain = (cover.crop(tab) for cover in covers)
+        self.assertLess(sum(v < 40 for v in labeled.getdata()), labeled.width * labeled.height)
+        self.assertGreater(sum(v < 40 for v in labeled.getdata()), labeled.width * labeled.height // 3)  # solid ink
+        self.assertNotEqual(labeled.tobytes(), plain.tobytes())
+        self.assertEqual(covers[0].crop((0, 400, 1072, 1448)).tobytes(), covers[1].crop((0, 400, 1072, 1448)).tobytes())
+
 
 PROSE = ''.join(f'<p>Paragraph {n} explains the training run in enough detail to read as article prose, '
                 'with several sentences about models, data and the evaluation results that follow.</p>' for n in range(6))
@@ -295,12 +320,20 @@ class GraphicTests(unittest.TestCase):
         pieces = graphic_parts(output.getvalue())
         self.assertGreaterEqual(len(pieces), 3)
         for data, _, (width, height) in pieces:
-            self.assertLessEqual(height, round(width * 1.3))
+            self.assertLessEqual(height, round(width * 1.3 * 1.25))
             with Image.open(BytesIO(data)) as piece:
                 self.assertEqual(piece.getpixel((0, 0)), 255)  # cream became white
                 # Cuts fall between blocks: no piece starts or ends inside one.
                 self.assertEqual(piece.getpixel((piece.width // 2, 0)), 255)
                 self.assertEqual(piece.getpixel((piece.width // 2, piece.height - 1)), 255)
+
+        # A legend line just past a page stays with its chart rather than becoming its own piece.
+        chart = Image.new('RGB', (1000, 1400), 'white')
+        chart.paste((40, 40, 40), (100, 40, 900, 1250))
+        chart.paste((40, 40, 40), (100, 1280, 300, 1300))
+        output = BytesIO()
+        chart.save(output, 'PNG')
+        self.assertEqual(len(graphic_parts(output.getvalue())), 1)
 
 
 MATHJAX = '<script>window.MathJax = {tex: {inlineMath: [["\\\\(", "\\\\)"]]}};</script><script src="/mathjax/tex-svg.js"></script>'

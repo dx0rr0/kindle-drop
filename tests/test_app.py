@@ -300,13 +300,18 @@ class Tests(unittest.TestCase):
         try:
             with patch('kindle_drop.app.validate_kindle', lambda x: x), patch.object(self.app, 'check_runtime'):
                 result = self.app.send(b['id'])
-                self.assertEqual(result['remote_path'], cfg['inbox'] + '/' + b['filename'])
+                self.assertEqual(result['remote_path'], cfg['inbox'] + '/Artículos/' + b['filename'])
                 self.assertEqual(self.app.books[0]['remote_path'], result['remote_path'])
-                remote = fake_root / cfg['inbox'].lstrip('/') / b['filename']
+                self.assertEqual(self.app.books[0]['shelf'], 'article')
+                remote = fake_root / cfg['inbox'].lstrip('/') / 'Artículos' / b['filename']
                 self.assertEqual(remote.read_bytes(), sample_epub())
                 self.app.send(b['id'])
                 self.assertEqual(len(list(remote.parent.iterdir())), 1)
                 self.assertEqual(self.app.books[0]['status'], 'Sent')
+                book = self.app.send(b['id'], book=True)
+                self.assertEqual(book['remote_path'], cfg['inbox'] + '/' + b['filename'])
+                self.assertEqual((fake_root / cfg['inbox'].lstrip('/') / b['filename']).read_bytes(), sample_epub())
+                self.assertEqual(self.app.books[0]['shelf'], 'book')
                 self.app.remove_book(b['id'])
                 self.assertEqual(remote.read_bytes(), sample_epub())
                 self.assertEqual(self.app.books, [])
@@ -334,7 +339,7 @@ class Tests(unittest.TestCase):
                 self.app.send(b['id'])
                 self.assertEqual(connect.call_count, 1)
             self.assertEqual(len(fixture.commands), 1)  # verified by sha256sum, not by downloading
-            self.assertEqual((fake_root / 'mnt/us/documents' / b['filename']).read_bytes(), sample_epub())
+            self.assertEqual((fake_root / 'mnt/us/documents/Artículos' / b['filename']).read_bytes(), sample_epub())
         finally:
             fixture.close()
 

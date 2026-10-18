@@ -17,6 +17,7 @@ from .epub import Section, epub_bytes
 MAX_IMAGES = 32
 IMAGE_WORKERS = 6
 COVER_SIZE = (1072, 1448)  # a 300 ppi Kindle screen
+COVER_LABEL = 'ARTÍCULO'  # tells an article from a book in history, search and collections
 XML_INVALID = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
 LANGUAGE = re.compile(r'[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*')
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
@@ -39,6 +40,7 @@ FIGURE_LABEL = re.compile(r'^\s*(?:figure|fig\.|table|chart|diagram)\s*\d+[a-z]?
 HIDDEN = ([], None)  # a rendered graphic the page does not display
 INK = 0.85  # darkens light tones of rendered charts: pastel colors are near-white on e-ink
 PAGE_RATIO = 1.3  # height / width of a rendered chart piece that fits one e-reader page
+SLIVER_ALLOWANCE = 1.25  # a chart piece may grow this much past a page instead of leaving a sliver
 MAX_STYLESHEETS = 40  # long illustrated articles ship a stylesheet per figure
 MAX_STYLESHEET_BYTES = 2 * 1024 * 1024
 MAX_STYLES_TOTAL = 8 * 1024 * 1024
@@ -198,7 +200,17 @@ def find_graphics(tree):
                               for a in node.iterancestors())
     for svg in tree.iter('svg'):
         if len(svg.findall('.//text')) >= 2 and not inside(svg):
-            add(svg, None, svg.get('aria-label') or figure_label(svg))
+            # A figure holding only the chart draws its title, legend and responsive variants with it.
+            figure = next(svg.iterancestors('figure'), None)
+            drawings = figure.xpath('.//svg[not(ancestor::svg)]') if figure is not None else []
+            if figure is not None and not inside(figure) and not figure.xpath(
+                    './/img | .//picture | .//video | .//canvas | .//pre | .//table | .//blockquote | .//p') \
+                    and len(squashed(figure)) - sum(len(squashed(d)) for d in drawings) <= LABEL_TEXT:
+                described = figure.xpath('.//*[@role="img"]/@aria-label')
+                add(figure, None, figure.get('aria-label') or (described[0] if described else None)
+                    or svg.get('aria-label') or figure_label(figure))
+            else:
+                add(svg, None, svg.get('aria-label') or figure_label(svg))
     counts = {}
     for node in tree.iter():
         if not isinstance(node.tag, str) or not GEOMETRY.search(node.get('style', '')) or squashed(node) or inside(node):
@@ -211,7 +223,7 @@ def find_graphics(tree):
         counts[chart] = counts.get(chart, 0) + 1
     # A figure drawn in markup, not an image: many elements and little text (timelines, diagrams).
     for figure in tree.iter('figure'):
-        if not inside(figure) and len(squashed(figure)) <= GRAPHIC_TEXT and sum(1 for _ in figure.iter()) >= 24 \
+        if figure.get('data-kd-graphic') is None and not inside(figure) and len(squashed(figure)) <= GRAPHIC_TEXT and sum(1 for _ in figure.iter()) >= 24 \
                 and not figure.xpath('.//img | .//picture | .//video | .//canvas | .//pre | .//table | .//blockquote'):
             counts[figure] = 3
     charts = [chart for chart, bars in counts.items() if bars >= 3 and squashed(chart) and chart.tag not in ('body', 'html')]
@@ -283,9 +295,11 @@ def page_document(tree, url, fetch):
 
     def prune(node):
         for child in list(node):
+            if child in charts:
+                continue  # whole, with its caption, even when a chart inside it is marked too
             if child in path:
                 prune(child)
-            elif child not in charts and not kept(child):
+            elif not kept(child):
                 child.drop_tree()
 
     body = page.find('body')
@@ -338,14 +352,22 @@ def graphic_parts(png):
     image = image.crop((max(0, box[0] - pad), max(0, box[1] - pad),
                         min(image.width, box[2] + pad), min(image.height, box[3] + pad)))
     pieces, limit = [], max(200, round(image.width * PAGE_RATIO))
-    while image.height > limit:
-        # Cut in the middle of the widest blank band in the lower half of the page: between
-        # panels rather than under a panel's title.
-        cut, run, best = limit, 0, 0
-        for y in range(limit // 2, limit + 1):
+
+    def blank_band(top):
+        """(cut, width): the middle of the widest blank band between top/2 and top."""
+        cut, run, best = top, 0, 0
+        for y in range(top // 2, top + 1):
             run = run + 1 if blank_row(image, y) else 0
             if run and run >= best:
                 cut, best = y - run // 2, run
+        return cut, best
+
+    while image.height > limit:
+        # Cut in the middle of the widest blank band in the lower half of the page: between
+        # panels rather than under a panel's title.
+        cut, _ = blank_band(limit)
+        if image.height - cut < limit // 4 and image.height <= limit * SLIVER_ALLOWANCE:
+            break  # a slightly taller piece beats a sliver holding one legend line or an axis
         pieces.append(image.crop((0, 0, image.width, cut)))
         image = image.crop((0, cut, image.width, image.height))
     pieces.append(image)
@@ -381,6 +403,24 @@ def render_graphics(graphics, tree, url, fetch):
     return {**hidden, **drawn}
 
 
+def unwrapped_figures(tree):
+    """A copy whose figures read as paragraphs. Outside an <article>, text extraction drops every
+    <figure> with its images and caption, but keeps an image in a paragraph and a caption as text."""
+    copy = deepcopy(tree)
+    # Chart placeholders stand in for a whole figure, so they need the same treatment.
+    images = [i for figure in copy.iter('figure') for i in figure.iter('img')]
+    images += [i for i in copy.iter('img') if i.get('src', '').startswith(GRAPHIC) and i not in images]
+    for image in images:
+        if image.getparent().tag != 'p':
+            paragraph = html.Element('p')
+            image.getparent().replace(image, paragraph)
+            paragraph.append(image)
+            paragraph.tail, image.tail = image.tail, None
+    for caption in copy.iter('figcaption'):
+        caption.tag = 'p'
+    return copy
+
+
 def content_tree(raw, url):
     """(article body, page tree, graphics): the body is sanitized and has graphic placeholders."""
     parser = html.HTMLParser(no_network=True)
@@ -395,7 +435,7 @@ def content_tree(raw, url):
         body.tag = 'div'
     else:
         import trafilatura  # ~1 s to import; only needed for articles
-        source = html.tostring(tree, encoding='unicode') if graphics else raw
+        source = html.tostring(unwrapped_figures(tree), encoding='unicode') if graphics or tree.find('.//figure') is not None else raw
         extracted = trafilatura.extract(source, url=url, output_format='html', include_comments=False,
                                         include_tables=True, include_formatting=True,
                                         include_links=True, include_images=True)
@@ -562,8 +602,9 @@ def wrap(draw, text, face, width):
     return lines + [line] if line else lines
 
 
-def cover_image(title, site, picture=None):
-    """A portrait cover as JPEG: the article's first image above its title, and the site."""
+def cover_image(title, site, picture=None, label=None):
+    """A portrait cover as JPEG: the article's first image above its title, and the site.
+    A label sits in a black tab over the image's top corner, large enough to read in the mosaic."""
     width, height = COVER_SIZE
     margin = 72
     page = Image.new('L', COVER_SIZE, 255)
@@ -576,10 +617,10 @@ def cover_image(title, site, picture=None):
                                  Image.Resampling.LANCZOS)
         page.paste(picture, ((width - picture.width) // 2, 0))
         top = picture.height + 64
-    label = font(34, bold=False)
+    small = font(34, bold=False)
     footer = height - margin - 40
     draw.line((margin, footer - 28, width - margin, footer - 28), fill=0, width=3)
-    draw.text((margin, footer), site, font=label, fill=70)
+    draw.text((margin, footer), site, font=small, fill=70)
     room = footer - 72 - top
     for size in (88, 80, 72, 64, 56, 50, 44, 40):
         face, leading = font(size), round(size * 1.2)
@@ -591,6 +632,12 @@ def cover_image(title, site, picture=None):
         lines[-1] += '…'
     for number, line in enumerate(lines):
         draw.text((margin, top + number * leading), line, font=face, fill=0)
+    if label:
+        # The library mosaic shows a cover at about a quarter of its size: 52 px stays legible.
+        tab, pad, y = font(52), 28, 48
+        right = margin + draw.textlength(label, font=tab) + pad
+        draw.rounded_rectangle((margin - pad, y, right, y + 96), radius=18, fill=0, outline=255, width=6)
+        draw.text((margin, y + 18), label, font=tab, fill=255)
     buffer = BytesIO()
     page.save(buffer, 'JPEG', quality=85)
     return buffer.getvalue()
@@ -632,7 +679,8 @@ def clean_title(title, site, site_name=None):
     return title
 
 
-def build_article(raw, url, fetch):
+def build_article(raw, url, fetch, article=True):
+    """article: label the cover as an article; False packages the page as a book."""
     import trafilatura
     body, source_tree, graphics = content_tree(raw, url)
     dollars = formulas.renderer(source_tree)
@@ -731,6 +779,10 @@ def build_article(raw, url, fetch):
             parent.replace(node, wrapper)
             wrapper.append(node)
             wrapper.tail, node.tail = node.tail, None
+    # A figure is a block of its own: drop a paragraph left around it with no text of its own.
+    for node in list(body.iter('p')):
+        if len(node) == 1 and node[0].tag == 'figure' and not (node.text or '').strip() and not (node[0].tail or '').strip():
+            node.drop_tag()
     if picture is None and (preview := social_image(source_tree, url)):
         try:  # an article without a usable image of its own: its preview card, cover only
             _, (data, _, size) = download_image(preview, fetch)
@@ -738,7 +790,8 @@ def build_article(raw, url, fetch):
         except Exception:
             pass
     try:
-        cover = cover_image(title, site, Image.open(BytesIO(picture)) if picture else None)
+        label = COVER_LABEL if article else None
+        cover = cover_image(title, site, Image.open(BytesIO(picture)) if picture else None, label)
     except Exception:
         cover = None  # a missing cover never blocks the article
     lang = source_tree.get('lang', '').strip()

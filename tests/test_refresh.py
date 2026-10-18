@@ -16,10 +16,16 @@ class RefreshTests(unittest.TestCase):
             ('frontend/apps/filemanager/filemanager.lua', 'function FileManager:onRefresh()'),
             ('frontend/ui/widget/filechooser.lua', 'function FileChooser:clearSortingCache()'),
             ('frontend/ui/uimanager.lua', 'function UIManager:getTopmostVisibleWidget() function UIManager:scheduleIn( function UIManager:unschedule('),
+            ('frontend/apps/filemanager/filemanager.lua', 'function FileManager:moveFile(from, to)'),
+            ('frontend/docsettings.lua', 'function DocSettings.updateLocation(doc_path, new_doc_path, copy) function DocSettings:hasSidecarFile('),
+            ('frontend/readhistory.lua', 'function ReadHistory:updateItem(file, new_filepath)'),
+            ('frontend/readcollection.lua', 'function ReadCollection:updateItem(file, new_filepath)'),
+            ('frontend/util.lua', 'function util.makePath(path)'),
         ]:
             p = reader / name
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(body)
+            with p.open('a') as file:
+                file.write(body + '\n')
         (reader / 'settings').mkdir()
         (reader / 'plugins').mkdir()
         self.key = paramiko.ECDSAKey.generate()
@@ -43,7 +49,13 @@ class RefreshTests(unittest.TestCase):
         marker = self.root / refresh.MARKER.lstrip('/')
         first = marker.read_text()
         self.assertRegex(first, r'^[a-f0-9]{32}\n/mnt/us/books\n$')
-        self.assertTrue(refresh.notify(self.sftp, '/mnt/us/books'))
+        self.assertTrue(refresh.notify(self.sftp, '/mnt/us/books/Artículos', '/mnt/us/books/Artículos'))
+        self.assertRegex(marker.read_text(encoding='utf-8'), r'^[a-f0-9]{32}\n/mnt/us/books/Artículos\n/mnt/us/books/Artículos\n$')
+        refresh.queue_moves(self.sftp, [('/mnt/us/books/a.epub', '/mnt/us/books/Artículos/a.epub')])
+        moves = self.root / refresh.MOVES.lstrip('/')
+        self.assertEqual(moves.read_text(encoding='utf-8'), '/mnt/us/books/a.epub\t/mnt/us/books/Artículos/a.epub\n')
+        with self.assertRaisesRegex(ValueError, 'line break'):
+            refresh.queue_moves(self.sftp, [('/mnt/us/books/a\n.epub', '/mnt/us/books/Artículos/a.epub')])
         self.assertNotEqual(marker.read_text(), first)
         self.assertEqual(list(marker.parent.glob('*.part-*')), [])
         main = self.root / refresh.PLUGIN.lstrip('/') / 'main.lua'
@@ -70,6 +82,35 @@ class RefreshTests(unittest.TestCase):
             refresh.install(self.sftp)
         self.assertEqual((plugin / 'main.lua').read_bytes(), b'an unrelated plugin')
 
+    def test_organize_queues_only_earlier_web_articles(self):
+        from kindle_drop.app import App
+        app = App(self.root / 'local')
+        app.config['kindle'] = {'host': '127.0.0.1', 'port': self.fixture.port, 'inbox': '/mnt/us/books', 'fingerprint': 'unused'}
+        inbox = self.root / 'mnt/us/books'
+        inbox.mkdir(parents=True)
+        def record(id, name, **fields):
+            (inbox / name).write_bytes(b'epub')
+            return {'id': id, 'title': name, 'filename': name, 'status': 'Sent', 'remote_path': '/mnt/us/books/' + name, **fields}
+        app.books = [record('a' * 16, 'Article.epub', source='https://example.org/a', images=2),
+                     record('b' * 16, 'Paper.epub', source='https://example.org/paper.pdf', images=0, source_sha256='x'),
+                     record('c' * 16, 'Book.epub', source='EPUB file'),
+                     record('d' * 16, 'Gone.epub', source='https://example.org/gone', images=0)]
+        (inbox / 'Gone.epub').unlink()  # already moved or deleted on the Kindle
+        self.client.close = lambda: None  # organize closes its connection; this one is shared
+        connect = patch.object(app, 'connect', side_effect=lambda: (self.client, app.config['kindle']))
+        with connect, self.assertRaisesRegex(ValueError, 'companion'):
+            app.organize()  # without the companion nothing would carry History and highlights along
+        refresh.install(self.sftp)
+        with connect:
+            result = app.organize()
+        self.assertEqual(result['moved'], ['a' * 16])
+        moves = (self.root / refresh.MOVES.lstrip('/')).read_text(encoding='utf-8')
+        self.assertEqual(moves, '/mnt/us/books/Article.epub\t/mnt/us/books/Artículos/Article.epub\n')
+        self.assertTrue((inbox / 'Artículos').is_dir())
+        self.assertRegex((self.root / refresh.MARKER.lstrip('/')).read_text(encoding='utf-8'), r'\n/mnt/us/books/Artículos\n$')
+        self.assertEqual(app.books[0]['remote_path'], '/mnt/us/books/Artículos/Article.epub')
+        self.assertEqual([b.get('shelf') for b in app.books], ['article', None, None, None])
+
     def test_refresh_failure_preserves_successful_delivery(self):
         from kindle_drop.app import App
         from tests.test_app import sample_epub
@@ -83,4 +124,4 @@ class RefreshTests(unittest.TestCase):
         self.assertFalse(result['refresh_requested'])
         self.assertIn('delivered', result['refresh_warning'])
         self.assertEqual(app.books[0]['status'], 'Sent')
-        self.assertEqual((self.root / 'mnt/us/books' / book['filename']).read_bytes(), sample_epub())
+        self.assertEqual((self.root / 'mnt/us/books/Artículos' / book['filename']).read_bytes(), sample_epub())
