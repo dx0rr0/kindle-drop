@@ -208,6 +208,41 @@ class ArticleImageTests(unittest.TestCase):
         self.assertNotIn('<p><figure', chapter)
         self.assertLess(chapter.index('Paragraph 4'), chapter.index('<figure'))
 
+    def test_pages_without_an_article_element_keep_headings_lists_and_code(self):
+        # Outside <article>, text extraction keeps loose paragraphs only; the element holding them is kept whole.
+        prose = ''.join(f'<p>Paragraph {n} carries enough article prose about evals, graders and '
+                        'hillclimbing to be read as the main text of this page by the extractor.</p>' for n in range(4))
+        page = ('<html lang="en"><head><title>Evals</title></head><body><nav><a href="/">Home</a></nav>'
+                '<header><h1>Evals</h1><p class="standfirst">Principles for designing evals and hillclimbing against them.</p></header>'
+                '<aside><a href="#steps">Steps</a></aside><div class="prose"><section>'
+                f'{prose}<h2 id="steps">/CLAUDE-API BUILD-EVAL</h2><p>The <code>build-eval</code> command turns these principles into a workflow.</p>'
+                '<ul><li>Production transcripts, after asking about retention.</li><li>Bug reports and support tickets.</li></ul>'
+                '<div class="art-code"><div class="ch"><span>CODE<span>Shell</span></span><button>Copy</button></div><pre>claude update</pre></div>'
+                f'<figure><img src="/fig.png" alt="Curves"><figcaption><b>FIG 2</b><span>Adversarial sampling</span></figcaption></figure>'
+                f'<blockquote><span>@<!-- -->ClaudeDevs</span> Long answers now stream smoother.</blockquote>'
+                f'{prose}</section></div><footer><p>Copyright notice for every page on this site, which is not the article.</p></footer></body></html>')
+        article = build_article(page.encode(), 'https://example.org/post', lambda url, **kw: (photo_bytes(), 'image/jpeg', url))
+        chapter = article.section.html
+        self.assertIn('<h2 id="steps">/CLAUDE-API BUILD-EVAL</h2>', chapter)
+        self.assertIn('<p>The <code>build-eval</code> command', chapter)
+        self.assertIn('<li>Bug reports and support tickets.</li>', chapter)
+        self.assertIn('<pre>claude update</pre>', chapter)
+        self.assertNotIn('Copy', chapter)
+        self.assertNotIn('Shell', chapter)
+        self.assertIn('FIG 2 Adversarial sampling', chapter.replace('</b>', '').replace('<b>', ''))
+        self.assertLess(chapter.index('Principles for designing evals'), chapter.index('Paragraph 0'))
+        self.assertIn('@ClaudeDevs Long answers', chapter)  # text after a React <!-- --> comment
+        self.assertNotIn('Copyright notice', chapter)
+        self.assertNotIn('Home', chapter)
+        self.assertEqual(article.images, 1)
+
+    def test_image_addresses_with_spaces_and_non_ascii_are_encoded(self):
+        node = html.fromstring('<img src="/uploads/Screenshot at 5.04.51 PM.png">')
+        self.assertEqual(image_source(node, 'https://example.org/post'),
+                         'https://example.org/uploads/Screenshot%20at%205.04.51%E2%80%AFPM.png')
+        node = html.fromstring('<img src="/i.png?w=600&amp;q=80%2C">')
+        self.assertEqual(image_source(node, 'https://example.org/post'), 'https://example.org/i.png?w=600&q=80%2C')
+
     def test_article_covers_carry_a_tab_and_books_do_not(self):
         fetch = lambda url, **kwargs: (photo_bytes(), 'image/jpeg', url)
         covers = [Image.open(BytesIO(build_article(ARTICLE.encode(), 'https://example.org/article', fetch, article=kind).cover))

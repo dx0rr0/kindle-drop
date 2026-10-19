@@ -268,8 +268,10 @@ CAPTIONS = r"""JSON.stringify(%s.map(selector => {
   if (!root) return null;
   const own = root.tagName === 'FIGURE' && root.querySelector(':scope > figcaption');
   if (own) {
+    // innerText keeps the breaks the stylesheet puts between parts ("FIG 2", then the title).
+    const text = (own.innerText || own.textContent).replace(/\s+/g, ' ').trim();
     own.style.setProperty('display', 'none', 'important');
-    return own.textContent.replace(/\s+/g, ' ').trim();
+    return text;
   }
   const pattern = /^\s*(figure|fig\.|table|chart|diagram)\s*\d+[a-z]?\s*[:.–—-]/i;
   for (const node of root.querySelectorAll('figcaption, caption, p, div, span, small')) {

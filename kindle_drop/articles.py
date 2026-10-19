@@ -6,7 +6,7 @@ import base64
 import hashlib
 from io import BytesIO
 import re
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 from lxml import etree, html
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -115,7 +115,8 @@ def image_source(node, url):
         src = max(eligible)[1] if eligible else min(choices)[1]
     else:
         src = node.get('data-src') or node.get('data-original') or node.get('src') or ''
-    return src if src.startswith('data:') else urljoin(url, src)
+    # Spaces and non-ASCII characters (a "5.04 PM" screenshot name) are percent-encoded for the request.
+    return src if src.startswith('data:') else quote(urljoin(url, src), safe="%/:=&?~#+!$,;'@()*[]")
 
 
 @dataclass
@@ -421,6 +422,52 @@ def unwrapped_figures(tree):
     return copy
 
 
+def extracted_tree(extracted, parser):
+    """Trafilatura's HTML, with the inline code it writes as <pre> (which would end the paragraph) back as <code>."""
+    try:
+        tree = etree.fromstring(extracted.encode('utf-8'))
+    except etree.XMLSyntaxError:
+        return html.fromstring(extracted, parser=parser)
+    for node in tree.iter('pre'):
+        if node.getparent().tag in ('p', 'li', 'td', 'th', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'a'):
+            node.tag = 'code'
+    return html.fromstring(etree.tostring(tree, encoding='unicode'), parser=parser)
+
+
+def located_body(tree, extracted):
+    """(element, lead) holding the text trafilatura extracted, or (None, []).
+
+    On a page without an <article>, trafilatura only recovers loose paragraphs, losing headings,
+    lists and code blocks; its paragraphs still show which element holds the article, which is
+    then kept whole, like an <article>. Lead paragraphs before it (a standfirst) come along."""
+    blocks = [' '.join(''.join(p.itertext()).split()) for p in extracted.iter('p')]
+    blocks = [text for text in blocks if len(text) >= 40]
+    total = sum(map(len, blocks))
+    page = {}
+    for node in tree.iter('p', 'figcaption'):  # captions read as paragraphs (unwrapped_figures)
+        page.setdefault(squashed(node), node)
+    found = [(page[text], len(text)) for text in blocks if text in page]
+    if not total or sum(weight for _, weight in found) < 0.8 * total:
+        return None, []
+    weights, depth = {}, {}
+    for node, weight in found:
+        for level, ancestor in enumerate(reversed(list(node.iterancestors()))):
+            weights[ancestor] = weights.get(ancestor, 0) + weight
+            depth[ancestor] = level
+    holders = [node for node, weight in weights.items() if weight >= 0.9 * total and node.tag not in ('html', 'body')]
+    if not holders:
+        return None, []
+    holder = max(holders, key=depth.get)
+    order = {node: index for index, node in enumerate(tree.iter())}
+    lead = []
+    for node, _ in found:
+        if holder in node.iterancestors():
+            break
+        if order[node] < order[holder] and node not in lead:
+            lead.append(node)
+    return holder, lead[:2]
+
+
 def content_tree(raw, url):
     """(article body, page tree, graphics): the body is sanitized and has graphic placeholders."""
     parser = html.HTMLParser(no_network=True)
@@ -430,10 +477,8 @@ def content_tree(raw, url):
     # Prefer semantic article bodies: heuristic text extraction can discard pre/code and captions.
     candidates = tree.xpath('//*[@itemprop="articleBody"] | //article')
     candidates = [n for n in candidates if len(n.text_content().strip()) >= 120]
-    if candidates:
-        body = deepcopy(max(candidates, key=lambda n: len(n.text_content())))
-        body.tag = 'div'
-    else:
+    lead = []
+    if not candidates:
         import trafilatura  # ~1 s to import; only needed for articles
         source = html.tostring(unwrapped_figures(tree), encoding='unicode') if graphics or tree.find('.//figure') is not None else raw
         extracted = trafilatura.extract(source, url=url, output_format='html', include_comments=False,
@@ -441,11 +486,31 @@ def content_tree(raw, url):
                                         include_links=True, include_images=True)
         if not extracted:
             raise ValueError('Could not extract the article. It may require login or JavaScript.')
-        extracted_tree = html.fromstring(extracted, parser=parser)
-        body = extracted_tree.find('body')
-        if body is None:
-            body = extracted_tree
+        extracted = extracted_tree(extracted, parser)
+        holder, lead = located_body(tree, extracted)
+        if holder is not None:
+            candidates = [holder]
+        else:
+            body = extracted.find('body')
+            if body is None:
+                body = extracted
+            body.tag = 'div'
+    if candidates:
+        body = deepcopy(max(candidates, key=lambda n: len(n.text_content())))
         body.tag = 'div'
+        for index, node in enumerate(lead):
+            body.insert(index, deepcopy(node))
+            body[index].tail = None
+        # A code block's toolbar (language, Copy button) is not part of the article.
+        for node in list(body.iter('pre')):
+            bar = node.getprevious()
+            if bar is not None and bar.find('.//button') is not None and len(squashed(bar)) <= 40:
+                bar.drop_tree()
+    # Parts a stylesheet sets apart ("FIG 2", then the title; "23.6 ms" over "±0.63") keep a space between them.
+    for holder in body.iter('figcaption', 'td', 'th'):
+        for part in holder.iterdescendants('span', 'div', 'p', 'b', 'strong', 'small'):
+            if part.getnext() is not None and not part.tail:
+                part.tail = ' '
     # Select image URLs while responsive/lazy attributes are still available.
     for node in list(body.iter('img')):
         classes = node.get('class', '')
@@ -466,7 +531,13 @@ def content_tree(raw, url):
     for node in list(body.iterdescendants()):
         if not isinstance(node.tag, str):
             if node.getparent() is not None:
-                node.getparent().remove(node)
+                # Keep the text after a comment: React writes "@<!-- -->ClaudeDevs".
+                previous, parent = node.getprevious(), node.getparent()
+                if previous is not None:
+                    previous.tail = (previous.tail or '') + (node.tail or '')
+                else:
+                    parent.text = (parent.text or '') + (node.tail or '')
+                parent.remove(node)
             continue
         if node.tag.startswith('{'):
             continue  # sanitized MathML
